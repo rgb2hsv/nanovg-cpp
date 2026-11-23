@@ -123,6 +123,8 @@ protected:
     float distTol;
     float fringeWidth;
     float devicePxRatio;
+    float viewWidth = 0.0f;
+    float viewHeight = 0.0f;
     std::shared_ptr<FONScontext> fs;
     std::vector<int> fontImages;
     size_t fontImageIdx;
