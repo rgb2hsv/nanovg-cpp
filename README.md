@@ -76,6 +76,22 @@ Calling `nvgBeginPath()` will clear any existing paths and start drawing from bl
 
 In the C++ API, the same operations are methods on `nvg::Context` (for example `vg.beginPath()`, `vg.rect(...)`, `vg.fill()`).
 
+### Skia-style draw calls (C++ only)
+
+`nvg::Context` also offers one-call draw methods modeled after `SkCanvas`. Each builds its own path and renders it with the current state, using an optional `nvg::PaintStyle` (`Fill`, `Stroke`, `FillAndStroke`). Because they replace the current path, don't call them in the middle of a `beginPath()` … `fill()` sequence.
+
+```cpp
+vg.clear(nvg::rgba(40, 40, 48, 255));
+vg.drawRoundRect(nvg::Rect{20, 20, 100, 60}, 12, nvg::PaintStyle::FillAndStroke);
+vg.drawArc(200, 50, 30, 0, nvg::nvgPi * 1.5f, /*useCenter*/ true);
+vg.drawLine(20, 120, 220, 160);
+vg.drawImageRect(image, nvg::Rect{0, 0, 64, 64}, nvg::Rect{240, 20, 128, 128});
+```
+
+Available: `drawPaint`, `drawColor`, `clear`, `drawLine`, `drawPoints` (`PointMode::Points/Lines/Polygon`), `drawPoint`, `drawPolygon`, `drawRect`, `drawRoundRect`, `drawRoundRectVarying`, `drawDRRect`, `drawCircle`, `drawOval`, `drawArc`, `drawImage`, `drawImageRect`, `drawImageNine`, `drawVertices`.
+
+The example apps (`example_gl2`, `example_gl3`) show every one of these in the "Skia-style draw calls" panel along the bottom of the window (`renderDrawCallsDemo` in [`example/demo.cpp`](example/demo.cpp)).
+
 ## Understanding Composite Paths
 
 Because of the way the rendering backend is build in NanoVG, drawing a composite path, that is path consisting from multiple paths defining holes and fills, is a bit more involved. NanoVG uses even-odd filling rule and by default the paths are wound in counter clockwise order. Keep that in mind when drawing using the low level draw API. In order to wind one of the predefined shapes as a hole, you should call `nvgPathWinding(vg, NVG_HOLE)`, or `nvgPathWinding(vg, NVG_CW)` _after_ defining the path.

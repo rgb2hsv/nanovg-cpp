@@ -138,6 +138,26 @@ struct CompositeOperationState {
     int dstAlpha;
 };
 
+// Axis-aligned rectangle in local (pre-transform) coordinates.
+struct Rect {
+    float x, y, w, h;
+};
+
+// How a draw* call renders its shape, analogous to SkPaint::Style.
+// Fill uses the current fill paint, Stroke uses the current stroke paint/width/caps/joins.
+enum class PaintStyle : int {
+    Fill = 0,
+    Stroke = 1,
+    FillAndStroke = 2,
+};
+
+// Interpretation of the point list passed to Context::drawPoints, analogous to SkCanvas::PointMode.
+enum class PointMode : int {
+    Points = 0,   // Each point is drawn as a dot of strokeWidth diameter (round dot for LineCap::Round, else square).
+    Lines = 1,    // Each consecutive pair of points is drawn as an independent line segment.
+    Polygon = 2,  // The points are drawn as one connected, open polyline.
+};
+
 struct GlyphPosition {
     const char* str;   // Position of the glyph in the input string.
     float x;           // The x-coordinate of the logical glyph position.
@@ -303,6 +323,43 @@ public:
     void circle(float cx, float cy, float r);
     void fill();
     void stroke();
+
+    // Immediate-mode draw calls modeled after SkCanvas. Each call builds its own path and renders it
+    // with the current state (paints, stroke width, caps, joins, transform, scissor, alpha, composite op).
+    // Note: they replace the current path, so call them outside of a beginPath()/fill() sequence.
+
+    // Fills the whole viewport (respecting scissor) with a paint or color, like SkCanvas::drawPaint/drawColor.
+    void drawPaint(const Paint& paint);
+    void drawColor(const Color& color);
+    // Replaces the pixels in the viewport (respecting scissor) with color, ignoring blending, like SkCanvas::clear.
+    void clear(const Color& color);
+    void drawLine(float x0, float y0, float x1, float y1);
+    // pts is an array of count (x, y) pairs, i.e. 2 * count floats.
+    void drawPoints(PointMode mode, const float* pts, int count);
+    void drawPoint(float x, float y);
+    void drawPolygon(const float* pts, int count, PaintStyle style = PaintStyle::Fill);
+    void drawRect(const Rect& r, PaintStyle style = PaintStyle::Fill);
+    void drawRoundRect(const Rect& r, float radius, PaintStyle style = PaintStyle::Fill);
+    void drawRoundRectVarying(const Rect& r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, PaintStyle style = PaintStyle::Fill);
+    // Fills the area between two rounded rects (outer minus inner), like SkCanvas::drawDRRect.
+    void drawDRRect(const Rect& outer, float outerRadius, const Rect& inner, float innerRadius);
+    void drawCircle(float cx, float cy, float r, PaintStyle style = PaintStyle::Fill);
+    // Ellipse inscribed in the rect, like SkCanvas::drawOval.
+    void drawOval(const Rect& oval, PaintStyle style = PaintStyle::Fill);
+    // Circular arc, like SkCanvas::drawArc. Angles in radians; positive sweep is clockwise (y-down).
+    // With useCenter the arc is closed through the center (a wedge); otherwise Fill draws the chord segment.
+    void drawArc(float cx, float cy, float r, float startAngle, float sweepAngle, bool useCenter, PaintStyle style = PaintStyle::Fill);
+    // Draws the full image with its top-left corner at (x, y), like SkCanvas::drawImage.
+    void drawImage(int image, float x, float y, float alpha = 1.0f);
+    // Draws the src sub-rect of the image (in image pixels) scaled into dst, like SkCanvas::drawImageRect.
+    void drawImageRect(int image, const Rect& src, const Rect& dst, float alpha = 1.0f);
+    void drawImageRect(int image, const Rect& dst, float alpha = 1.0f);
+    // Nine-patch: corners outside center (image pixels) keep their size, edges stretch along one axis,
+    // and the center stretches in both, like SkCanvas::drawImageNine.
+    void drawImageNine(int image, const Rect& center, const Rect& dst, float alpha = 1.0f);
+    // Draws textured triangles (3 vertices per triangle). Vertex x/y are local coordinates and u/v are
+    // normalized texture coordinates in [0, 1]; s/t are ignored. Like SkCanvas::drawVertices in triangle mode.
+    void drawVertices(const Vertex* verts, int nverts, int image, float alpha = 1.0f);
     int createFont(const char* name, const char* filename);
     int createFontAtIndex(const char* name, const char* filename, const int fontIndex);
     int createFontMem(const char* name, unsigned char* data, int ndata, int freeData);

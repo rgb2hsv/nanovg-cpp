@@ -5,6 +5,7 @@
 #include <array>
 #include <filesystem>
 #include <vector>
+#include <algorithm>
 
 #ifdef _MSC_VER
 #ifndef _USE_MATH_DEFINES
@@ -906,6 +907,34 @@ void drawLines(nvg::Context& vg, float x, float y, float w, float h, float lineW
     vg.restore();
 }
 
+// Builds a 48x48 "panel" texture for the nine-patch demo: rounded 16px corners, a 2px light border,
+// a darker inner fill and a diagonal stripe pattern so stretching of edges/center is easy to see.
+static int createNinePatchImage(nvg::Context& vg)
+{
+    constexpr int size = 48;
+    constexpr float corner = 16.0f;
+    std::vector<unsigned char> px(size * size * 4);
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            // Signed distance to a rounded rect covering the whole image.
+            const float cx = x + 0.5f, cy = y + 0.5f;
+            const float qx = std::fabs(cx - size * 0.5f) - (size * 0.5f - corner);
+            const float qy = std::fabs(cy - size * 0.5f) - (size * 0.5f - corner);
+            const float outside = std::sqrt(std::max(qx, 0.0f) * std::max(qx, 0.0f) + std::max(qy, 0.0f) * std::max(qy, 0.0f));
+            const float dist = outside + std::min(std::max(qx, qy), 0.0f) - corner;
+            const float coverage = clampf(0.5f - dist, 0.0f, 1.0f);
+            const bool border = dist > -2.5f;
+            const bool stripe = ((x + y) / 4) % 2 == 0;
+            unsigned char* p = &px[(y * size + x) * 4];
+            p[0] = border ? 230 : (stripe ? 60 : 48);
+            p[1] = border ? 200 : (stripe ? 110 : 90);
+            p[2] = border ? 120 : (stripe ? 170 : 140);
+            p[3] = static_cast<unsigned char>(coverage * 255.0f);
+        }
+    }
+    return vg.createImageRGBA(size, size, 0, px.data());
+}
+
 int loadDemoData(nvg::Context& vg, DemoData& data)
 {
     int i;
@@ -957,6 +986,12 @@ int loadDemoData(nvg::Context& vg, DemoData& data)
     vg.addFallbackFontId(data.fontNormal, data.fontEmoji);
     vg.addFallbackFont(fontNormal.c_str(), fontEmoji.c_str());
 
+    data.ninePatch = createNinePatchImage(vg);
+    if (data.ninePatch == 0) {
+        printf("Could not create nine-patch image.\n");
+        return -1;
+    }
+
     return 0;
 }
 
@@ -965,6 +1000,7 @@ void freeDemoData(nvg::Context& vg, DemoData& data)
     int i;
 
     for (i = 0; i < 12; i++) vg.deleteImage(data.images[i]);
+    if (data.ninePatch != 0) vg.deleteImage(data.ninePatch);
 }
 
 void drawParagraph(nvg::Context& vg, float x, float y, float width, float height, float mx, float my)
@@ -1242,6 +1278,11 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
 {
     float x, y, popy;
 
+    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = std::floor(height * 0.4f);
+    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
+    height -= drawCallsHeight;
+
     drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
     drawStylizedLines(vg, width - 245, 15, 180, 130);
     drawFancyText(vg, width - 160, 170);
@@ -1321,6 +1362,281 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
 
     drawBezierCurve(vg, width - 380, height - 220, 100, t);
     drawScaledText(vg, 450.0, 50, t);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Draw-calls demo page: one cell per Skia-style immediate draw call.
+
+static void drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title)
+{
+    vg.fillColor(nvg::rgba(255, 255, 255, 12));
+    vg.strokeColor(nvg::rgba(255, 255, 255, 40));
+    vg.strokeWidth(1.0f);
+    vg.drawRoundRect(cell, 6.0f, nvg::PaintStyle::FillAndStroke);
+
+    vg.fontSize(13.0f);
+    vg.fontFace("sans-bold");
+    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Top));
+    vg.fillColor(nvg::rgba(255, 255, 255, 180));
+    vg.text(cell.x + 8, cell.y + 6, title, nullptr);
+}
+
+static void demoRects(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    const float y = c.y + 40;
+    const float w = (c.w - 40) / 3.0f;
+    vg.fillColor(nvg::rgba(255, 160, 0, 255));
+    vg.strokeColor(nvg::rgba(80, 200, 255, 255));
+    vg.strokeWidth(3.0f);
+    vg.drawRect(nvg::Rect{c.x + 10, y, w, 50});
+    vg.drawRect(nvg::Rect{c.x + 20 + w, y, w, 50}, nvg::PaintStyle::Stroke);
+    vg.drawRoundRect(nvg::Rect{c.x + 30 + w * 2, y, w, 50}, 6.0f + 6.0f * sinf(t * 2.0f), nvg::PaintStyle::FillAndStroke);
+    const float r = 20.0f + 15.0f * sinf(t);
+    vg.drawRoundRectVarying(nvg::Rect{c.x + 10, y + 64, c.w - 20, 50}, r, 4, r, 4, nvg::PaintStyle::FillAndStroke);
+}
+
+static void demoDRRect(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    const float inset = 14.0f + 10.0f * sinf(t * 1.5f);
+    const nvg::Rect outer{c.x + 20, c.y + 36, c.w - 40, c.h - 50};
+    const nvg::Rect inner{outer.x + inset, outer.y + inset, outer.w - inset * 2, outer.h - inset * 2};
+    vg.fillPaint(vg.linearGradient(outer.x, outer.y, outer.x + outer.w, outer.y + outer.h, nvg::rgba(255, 90, 120, 255), nvg::rgba(120, 80, 255, 255)));
+    vg.drawDRRect(outer, 24.0f, inner, 24.0f - inset * 0.8f);
+}
+
+static void demoCircles(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    const float cy = c.y + c.h * 0.5f + 12;
+    vg.fillColor(nvg::rgba(120, 220, 120, 255));
+    vg.strokeColor(nvg::rgba(255, 255, 255, 220));
+    vg.strokeWidth(3.0f);
+    vg.drawCircle(c.x + 45, cy, 28);
+    vg.drawCircle(c.x + 110, cy, 22 + 6 * sinf(t * 3.0f), nvg::PaintStyle::Stroke);
+    const float rx = 30 + 12 * sinf(t), ry = 45 - 12 * sinf(t);
+    vg.drawOval(nvg::Rect{c.x + c.w - 50 - rx, cy - ry, rx * 2, ry * 2}, nvg::PaintStyle::FillAndStroke);
+}
+
+static void demoArcs(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    const float cy = c.y + c.h * 0.5f + 12;
+    const float sweep = nvg::nvgPi * (1.0f + 0.9f * sinf(t));
+    const float start = t * 0.7f;
+    vg.fillColor(nvg::rgba(255, 200, 40, 255));
+    vg.strokeColor(nvg::rgba(80, 200, 255, 255));
+    vg.strokeWidth(3.0f);
+    vg.drawArc(c.x + 42, cy, 30, start, sweep, true);                                 // wedge
+    vg.drawArc(c.x + 117, cy, 30, start, sweep, false, nvg::PaintStyle::FillAndStroke);  // chord + open arc
+    vg.lineCap(static_cast<int>(nvg::LineCap::Round));
+    vg.strokeWidth(6.0f);
+    vg.drawArc(c.x + 192, cy, 30, -nvg::nvgPi * 0.5f, -sweep, false, nvg::PaintStyle::Stroke);  // counter-clockwise
+    vg.lineCap(static_cast<int>(nvg::LineCap::Butt));
+}
+
+static void demoLines(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    const float cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f + 12;
+    for (int i = 0; i < 12; i++) {
+        const float a = t * 0.5f + i * nvg::nvgPi / 6.0f;
+        vg.strokeColor(nvg::hsla(i / 12.0f, 0.7f, 0.6f, 255));
+        vg.strokeWidth(1.0f + i * 0.4f);
+        vg.drawLine(cx + cosf(a) * 12, cy + sinf(a) * 12, cx + cosf(a) * 55, cy + sinf(a) * 55);
+    }
+}
+
+static void demoPoints(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    std::array<float, 2 * 16> wave{};
+    for (int i = 0; i < 16; i++) {
+        wave[i * 2] = c.x + 15 + i * (c.w - 30) / 15.0f;
+        wave[i * 2 + 1] = c.y + 60 + sinf(t * 2.0f + i * 0.6f) * 18.0f;
+    }
+    vg.strokeColor(nvg::rgba(80, 200, 255, 255));
+    vg.strokeWidth(2.0f);
+    vg.drawPoints(nvg::PointMode::Polygon, wave.data(), 16);
+    vg.strokeColor(nvg::rgba(255, 255, 255, 255));
+    vg.strokeWidth(7.0f);
+    vg.lineCap(static_cast<int>(nvg::LineCap::Round));
+    vg.drawPoints(nvg::PointMode::Points, wave.data(), 16);  // round dots
+
+    std::array<float, 2 * 10> ticks{};
+    for (int i = 0; i < 5; i++) {
+        const float x = c.x + 20 + i * (c.w - 40) / 4.0f;
+        ticks[i * 4 + 0] = x;
+        ticks[i * 4 + 1] = c.y + c.h - 40;
+        ticks[i * 4 + 2] = x + 10 * sinf(t + i);
+        ticks[i * 4 + 3] = c.y + c.h - 12;
+    }
+    vg.lineCap(static_cast<int>(nvg::LineCap::Butt));
+    vg.strokeColor(nvg::rgba(255, 160, 0, 255));
+    vg.strokeWidth(3.0f);
+    vg.drawPoints(nvg::PointMode::Lines, ticks.data(), 10);  // independent segments
+    vg.strokeWidth(8.0f);
+    vg.drawPoint(c.x + c.w - 16, c.y + 22);  // square dot (butt cap)
+}
+
+static void demoPolygon(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    const float cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f + 12;
+    std::array<float, 2 * 10> star{};
+    for (int i = 0; i < 10; i++) {
+        const float a = t * 0.6f + i * nvg::nvgPi / 5.0f - nvg::nvgPi * 0.5f;
+        const float r = (i % 2 == 0) ? 55.0f : 24.0f;
+        star[i * 2] = cx + cosf(a) * r;
+        star[i * 2 + 1] = cy + sinf(a) * r;
+    }
+    vg.fillPaint(vg.radialGradient(cx, cy, 5, 55, nvg::rgba(255, 240, 120, 255), nvg::rgba(255, 120, 0, 255)));
+    vg.strokeColor(nvg::rgba(255, 255, 255, 230));
+    vg.strokeWidth(2.0f);
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Round));
+    vg.drawPolygon(star.data(), 10, nvg::PaintStyle::FillAndStroke);
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Miter));
+}
+
+static void demoPaintAndColor(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // drawPaint / drawColor cover the whole viewport; scissor them down to the cell.
+    vg.save();
+    vg.scissor(c.x + 10, c.y + 32, c.w - 20, (c.h - 42) * 0.5f - 4);
+    const float shift = c.w * 0.5f * sinf(t);
+    vg.drawPaint(vg.linearGradient(c.x + shift, 0, c.x + c.w + shift, 0, nvg::rgba(255, 60, 60, 255), nvg::rgba(60, 60, 255, 255)));
+    vg.restore();
+
+    vg.save();
+    vg.scissor(c.x + 10, c.y + 32 + (c.h - 42) * 0.5f, c.w - 20, (c.h - 42) * 0.5f);
+    vg.drawColor(nvg::hsla(fmodf(t * 0.1f, 1.0f), 0.6f, 0.5f, 255));
+    vg.restore();
+}
+
+static void demoImages(nvg::Context& vg, const nvg::Rect& c, float t, const DemoData& data)
+{
+    const int image = data.images[4];
+    int iw = 0, ih = 0;
+    vg.imageSize(image, iw, ih);
+    // Full image at its natural size, scaled down via the transform.
+    vg.save();
+    vg.translate(c.x + 10, c.y + 34);
+    vg.scale(0.8f, 0.8f);
+    vg.drawImage(image, 0, 0);
+    vg.restore();
+    // A 50x50 window panning across the image, magnified into the right half.
+    const float sx = (iw - 50) * (0.5f + 0.5f * sinf(t));
+    const float sy = (ih - 50) * (0.5f + 0.5f * cosf(t * 0.7f));
+    const nvg::Rect dst{c.x + c.w - 10 - 100, c.y + 34, 100, 100};
+    vg.drawImageRect(image, nvg::Rect{sx, sy, 50, 50}, dst);
+    vg.strokeColor(nvg::rgba(255, 255, 255, 160));
+    vg.strokeWidth(1.0f);
+    vg.drawRect(nvg::Rect{c.x + 10 + sx * 0.8f, c.y + 34 + sy * 0.8f, 40, 40}, nvg::PaintStyle::Stroke);
+    vg.drawRect(dst, nvg::PaintStyle::Stroke);
+}
+
+static void demoNinePatch(nvg::Context& vg, const nvg::Rect& c, float t, const DemoData& data)
+{
+    const float w = 60 + (c.w - 80) * (0.5f + 0.5f * sinf(t * 0.8f));
+    const float h = 40 + (c.h - 82) * (0.5f + 0.5f * cosf(t * 0.6f));
+    const nvg::Rect dst{c.x + (c.w - w) * 0.5f, c.y + 32 + (c.h - 42 - h) * 0.5f, w, h};
+    vg.drawImageNine(data.ninePatch, nvg::Rect{16, 16, 16, 16}, dst);
+}
+
+static void demoVertices(nvg::Context& vg, const nvg::Rect& c, float t, const DemoData& data)
+{
+    // A waving 6x4 textured mesh: two triangles per quad.
+    constexpr int nx = 6, ny = 4;
+    const float x0 = c.x + 20, y0 = c.y + 40;
+    const float gw = (c.w - 40) / nx, gh = (c.h - 60) / ny;
+    auto vert = [&](int i, int j) {
+        const float u = static_cast<float>(i) / nx, v = static_cast<float>(j) / ny;
+        const float x = x0 + i * gw + sinf(t * 2.0f + j * 0.9f) * 6.0f;
+        const float y = y0 + j * gh + cosf(t * 1.7f + i * 0.8f) * 5.0f;
+        return nvg::Vertex{x, y, u, v, 0, 0};
+    };
+    std::vector<nvg::Vertex> verts;
+    verts.reserve(nx * ny * 6);
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+            verts.push_back(vert(i, j));
+            verts.push_back(vert(i + 1, j));
+            verts.push_back(vert(i, j + 1));
+            verts.push_back(vert(i + 1, j));
+            verts.push_back(vert(i + 1, j + 1));
+            verts.push_back(vert(i, j + 1));
+        }
+    }
+    vg.drawVertices(verts.data(), static_cast<int>(verts.size()), data.images[2]);
+}
+
+static void demoClear(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // Checkerboard background, then clear() a moving window: it replaces the pixels outright,
+    // ignoring the 25% global alpha that would otherwise make a fill translucent.
+    const nvg::Rect area{c.x + 10, c.y + 32, c.w - 20, c.h - 42};
+    for (int j = 0; j < 6; j++)
+        for (int i = 0; i < 12; i++) {
+            vg.fillColor((i + j) % 2 ? nvg::rgba(200, 200, 200, 255) : nvg::rgba(90, 90, 90, 255));
+            vg.drawRect(nvg::Rect{area.x + i * area.w / 12, area.y + j * area.h / 6, area.w / 12, area.h / 6});
+        }
+    const float x = area.x + (area.w * 0.5f - 10) * (0.5f + 0.5f * sinf(t));
+    vg.save();
+    vg.globalAlpha(0.25f);
+    vg.fillColor(nvg::rgba(255, 80, 80, 255));
+    vg.drawRect(nvg::Rect{x, area.y + 8, area.w * 0.5f, area.h * 0.35f});  // translucent fill
+    vg.scissor(x, area.y + area.h * 0.55f, area.w * 0.5f, area.h * 0.35f);
+    vg.clear(nvg::rgba(255, 80, 80, 255));  // opaque despite globalAlpha
+    vg.restore();
+}
+
+void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float height, float t, DemoData& data)
+{
+    // Panel background and header.
+    vg.fillColor(nvg::rgba(36, 38, 46, 255));
+    vg.drawRect(nvg::Rect{x, y, width, height});
+    vg.strokeColor(nvg::rgba(255, 255, 255, 30));
+    vg.strokeWidth(1.0f);
+    vg.drawLine(x, y + 0.5f, x + width, y + 0.5f);
+
+    vg.fontSize(18.0f);
+    vg.fontFace("sans-bold");
+    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Middle));
+    vg.fillColor(nvg::rgba(255, 255, 255, 220));
+    vg.text(x + 12, y + 18, "Skia-style draw calls", nullptr);
+
+    constexpr int cols = 6, rows = 2;
+    // Each cell's content is authored in a fixed design space and scaled to fit the cell.
+    constexpr float designW = 240.0f, designH = 175.0f;
+    const float pad = 10.0f, top = 34.0f;
+    const float cw = (width - pad * (cols + 1)) / cols;
+    const float ch = (height - top - pad * rows) / rows;
+    if (cw <= 0.0f || ch <= 0.0f) return;
+    const float s = std::min(cw / designW, ch / designH);
+
+    struct Entry {
+        const char* title;
+        void (*draw)(nvg::Context&, const nvg::Rect&, float, const DemoData&);
+    };
+    static const Entry entries[cols * rows] = {
+        {"drawRect / drawRoundRect", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoRects(v, c, tt); }},
+        {"drawDRRect", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoDRRect(v, c, tt); }},
+        {"drawCircle / drawOval", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoCircles(v, c, tt); }},
+        {"drawArc", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoArcs(v, c, tt); }},
+        {"drawLine", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoLines(v, c, tt); }},
+        {"drawPoints / drawPoint", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoPoints(v, c, tt); }},
+        {"drawPolygon", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoPolygon(v, c, tt); }},
+        {"drawPaint / drawColor", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoPaintAndColor(v, c, tt); }},
+        {"drawImage / drawImageRect", demoImages},
+        {"drawImageNine", demoNinePatch},
+        {"drawVertices", demoVertices},
+        {"clear", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoClear(v, c, tt); }},
+    };
+
+    for (int i = 0; i < cols * rows; i++) {
+        const nvg::Rect c{x + pad + (i % cols) * (cw + pad), y + top + (i / cols) * (ch + pad), cw, ch};
+        vg.save();
+        drawCallsCell(vg, c, entries[i].title);
+        // Center the scaled design-space box in the cell.
+        vg.translate(c.x + (cw - designW * s) * 0.5f, c.y + (ch - designH * s) * 0.5f);
+        vg.scale(s, s);
+        entries[i].draw(vg, nvg::Rect{0, 0, designW, designH}, t, data);
+        vg.restore();
+    }
 }
 
 static int mini(int a, int b)

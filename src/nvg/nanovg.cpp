@@ -343,6 +343,8 @@ void Context::beginFrame(float windowWidth, float windowHeight, float devicePixe
     reset();
 
     mImpl->setDevicePixelRatio(devicePixelRatio);
+    mImpl->viewWidth = windowWidth;
+    mImpl->viewHeight = windowHeight;
 
     mImpl->params.renderViewport(mImpl->params.userPtr, windowWidth, windowHeight, devicePixelRatio);
 
@@ -1187,6 +1189,321 @@ void Context::stroke()
         mImpl->strokeTriCount += path->nstroke - 2;
         mImpl->drawCallCount++;
     }
+}
+
+// Skia-style immediate draw calls
+namespace
+{
+void renderWithStyle(Context& ctx, PaintStyle style)
+{
+    if (style != PaintStyle::Stroke) ctx.fill();
+    if (style != PaintStyle::Fill) ctx.stroke();
+}
+}  // namespace
+
+// Adds a device-space path covering everything that can currently be drawn: the scissor quad if a
+// scissor is set, otherwise the whole viewport. Must be called with an identity transform.
+// Covering only the scissor matters for blend modes like Copy: the scissor is applied as a coverage
+// mask in the shader, so a viewport-sized Copy fill would wipe the pixels outside the scissor.
+static void addVisibleAreaPath(Context& ctx, const Scissor& sc, float viewWidth, float viewHeight)
+{
+    if (sc.extent[0] < -0.5f || sc.extent[1] < -0.5f) {
+        ctx.rect(0.0f, 0.0f, viewWidth, viewHeight);
+        return;
+    }
+    const float ex = sc.extent[0], ey = sc.extent[1];
+    const float corners[4][2] = {{-ex, -ey}, {-ex, ey}, {ex, ey}, {ex, -ey}};
+    for (int i = 0; i < 4; i++) {
+        float x = 0.0f, y = 0.0f;
+        transformPoint(x, y, sc.xform, corners[i][0], corners[i][1]);
+        if (i == 0)
+            ctx.moveTo(x, y);
+        else
+            ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+}
+
+void Context::drawPaint(const Paint& paint)
+{
+    save();
+    // Bind the paint in the current local space first, then cover the visible area in device space.
+    fillPaint(paint);
+    resetTransform();
+    beginPath();
+    addVisibleAreaPath(*this, mImpl->topState().scissor, mImpl->viewWidth, mImpl->viewHeight);
+    fill();
+    restore();
+}
+
+void Context::drawColor(const Color& color)
+{
+    save();
+    fillColor(color);
+    resetTransform();
+    beginPath();
+    addVisibleAreaPath(*this, mImpl->topState().scissor, mImpl->viewWidth, mImpl->viewHeight);
+    fill();
+    restore();
+}
+
+void Context::clear(const Color& color)
+{
+    save();
+    globalAlpha(1.0f);
+    globalCompositeOperation(static_cast<int>(CompositeOperation::Copy));
+    // With Copy, antialiased edges would write partially transparent pixels.
+    shapeAntiAlias(0);
+    drawColor(color);
+    restore();
+}
+
+void Context::drawLine(float x0, float y0, float x1, float y1)
+{
+    beginPath();
+    moveTo(x0, y0);
+    lineTo(x1, y1);
+    stroke();
+}
+
+void Context::drawPoints(PointMode mode, const float* pts, int count)
+{
+    if (pts == nullptr || count <= 0) return;
+
+    switch (mode) {
+        case PointMode::Points: {
+            State& state = mImpl->topState();
+            const float hw = state.strokeWidth * 0.5f;
+            const bool round = state.lineCap == static_cast<int>(LineCap::Round);
+            save();
+            // Dots are filled with the stroke paint, matching Skia's use of the paint's stroke settings.
+            mImpl->topState().fill = mImpl->topState().stroke;
+            beginPath();
+            for (int i = 0; i < count; i++) {
+                const float x = pts[i * 2];
+                const float y = pts[i * 2 + 1];
+                if (round)
+                    circle(x, y, hw);
+                else
+                    rect(x - hw, y - hw, hw * 2.0f, hw * 2.0f);
+            }
+            fill();
+            restore();
+            break;
+        }
+        case PointMode::Lines:
+            beginPath();
+            for (int i = 0; i + 1 < count; i += 2) {
+                moveTo(pts[i * 2], pts[i * 2 + 1]);
+                lineTo(pts[i * 2 + 2], pts[i * 2 + 3]);
+            }
+            stroke();
+            break;
+        case PointMode::Polygon:
+            if (count < 2) return;
+            beginPath();
+            moveTo(pts[0], pts[1]);
+            for (int i = 1; i < count; i++) lineTo(pts[i * 2], pts[i * 2 + 1]);
+            stroke();
+            break;
+    }
+}
+
+void Context::drawPoint(float x, float y)
+{
+    const float pt[2] = {x, y};
+    drawPoints(PointMode::Points, pt, 1);
+}
+
+void Context::drawPolygon(const float* pts, int count, PaintStyle style)
+{
+    if (pts == nullptr || count < 2) return;
+    beginPath();
+    moveTo(pts[0], pts[1]);
+    for (int i = 1; i < count; i++) lineTo(pts[i * 2], pts[i * 2 + 1]);
+    closePath();
+    renderWithStyle(*this, style);
+}
+
+void Context::drawRect(const Rect& r, PaintStyle style)
+{
+    beginPath();
+    rect(r.x, r.y, r.w, r.h);
+    renderWithStyle(*this, style);
+}
+
+void Context::drawRoundRect(const Rect& r, float radius, PaintStyle style)
+{
+    beginPath();
+    roundedRect(r.x, r.y, r.w, r.h, radius);
+    renderWithStyle(*this, style);
+}
+
+void Context::drawRoundRectVarying(const Rect& r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, PaintStyle style)
+{
+    beginPath();
+    roundedRectVarying(r.x, r.y, r.w, r.h, radTopLeft, radTopRight, radBottomRight, radBottomLeft);
+    renderWithStyle(*this, style);
+}
+
+void Context::drawDRRect(const Rect& outer, float outerRadius, const Rect& inner, float innerRadius)
+{
+    beginPath();
+    roundedRect(outer.x, outer.y, outer.w, outer.h, outerRadius);
+    roundedRect(inner.x, inner.y, inner.w, inner.h, innerRadius);
+    pathWinding(static_cast<int>(Solidity::Hole));
+    fill();
+}
+
+void Context::drawCircle(float cx, float cy, float r, PaintStyle style)
+{
+    beginPath();
+    circle(cx, cy, r);
+    renderWithStyle(*this, style);
+}
+
+void Context::drawOval(const Rect& oval, PaintStyle style)
+{
+    beginPath();
+    ellipse(oval.x + oval.w * 0.5f, oval.y + oval.h * 0.5f, detail::absf(oval.w) * 0.5f, detail::absf(oval.h) * 0.5f);
+    renderWithStyle(*this, style);
+}
+
+void Context::drawArc(float cx, float cy, float r, float startAngle, float sweepAngle, bool useCenter, PaintStyle style)
+{
+    if (sweepAngle == 0.0f || r <= 0.0f) return;
+    const int dir = sweepAngle > 0.0f ? static_cast<int>(Winding::CW) : static_cast<int>(Winding::CCW);
+    const float endAngle = startAngle + sweepAngle;
+
+    auto buildPath = [&](bool closed) {
+        beginPath();
+        if (useCenter) moveTo(cx, cy);
+        arc(cx, cy, r, startAngle, endAngle, dir);
+        if (closed) closePath();
+    };
+
+    if (style != PaintStyle::Stroke) {
+        buildPath(true);
+        fill();
+    }
+    if (style != PaintStyle::Fill) {
+        // A wedge is stroked as a closed outline; a bare arc is stroked open, as in Skia.
+        buildPath(useCenter);
+        stroke();
+    }
+}
+
+void Context::drawImage(int image, float x, float y, float alpha)
+{
+    int w = 0, h = 0;
+    imageSize(image, w, h);
+    if (w <= 0 || h <= 0) return;
+    const Rect r{0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)};
+    drawImageRect(image, r, Rect{x, y, r.w, r.h}, alpha);
+}
+
+void Context::drawImageRect(int image, const Rect& src, const Rect& dst, float alpha)
+{
+    if (src.w == 0.0f || src.h == 0.0f || dst.w == 0.0f || dst.h == 0.0f) return;
+    int iw = 0, ih = 0;
+    imageSize(image, iw, ih);
+    if (iw <= 0 || ih <= 0) return;
+
+    const float sx = dst.w / src.w;
+    const float sy = dst.h / src.h;
+    const Paint pattern = imagePattern(dst.x - src.x * sx, dst.y - src.y * sy, static_cast<float>(iw) * sx, static_cast<float>(ih) * sy, 0.0f, image, alpha);
+
+    save();
+    fillPaint(pattern);
+    beginPath();
+    rect(dst.x, dst.y, dst.w, dst.h);
+    fill();
+    restore();
+}
+
+void Context::drawImageRect(int image, const Rect& dst, float alpha)
+{
+    int iw = 0, ih = 0;
+    imageSize(image, iw, ih);
+    drawImageRect(image, Rect{0.0f, 0.0f, static_cast<float>(iw), static_cast<float>(ih)}, dst, alpha);
+}
+
+void Context::drawImageNine(int image, const Rect& center, const Rect& dst, float alpha)
+{
+    int iwi = 0, ihi = 0;
+    imageSize(image, iwi, ihi);
+    if (iwi <= 0 || ihi <= 0 || dst.w <= 0.0f || dst.h <= 0.0f) return;
+    const float iw = static_cast<float>(iwi);
+    const float ih = static_cast<float>(ihi);
+
+    // Clamp the center rect to the image.
+    const float cx0 = detail::clampf(center.x, 0.0f, iw);
+    const float cy0 = detail::clampf(center.y, 0.0f, ih);
+    const float cx1 = detail::clampf(center.x + center.w, cx0, iw);
+    const float cy1 = detail::clampf(center.y + center.h, cy0, ih);
+
+    // Fixed border sizes; shrink proportionally when the destination is too small for them.
+    float left = cx0, right = iw - cx1, top = cy0, bottom = ih - cy1;
+    if (left + right > dst.w) {
+        const float s = dst.w / (left + right);
+        left *= s;
+        right *= s;
+    }
+    if (top + bottom > dst.h) {
+        const float s = dst.h / (top + bottom);
+        top *= s;
+        bottom *= s;
+    }
+
+    const std::array<float, 4> srcX = {0.0f, cx0, cx1, iw};
+    const std::array<float, 4> srcY = {0.0f, cy0, cy1, ih};
+    const std::array<float, 4> dstX = {dst.x, dst.x + left, dst.x + dst.w - right, dst.x + dst.w};
+    const std::array<float, 4> dstY = {dst.y, dst.y + top, dst.y + dst.h - bottom, dst.y + dst.h};
+
+    save();
+    // Adjacent patches share edges; antialiasing them would leave visible seams.
+    shapeAntiAlias(0);
+    for (size_t j = 0; j < 3; j++) {
+        for (size_t i = 0; i < 3; i++) {
+            const Rect s{srcX[i], srcY[j], srcX[i + 1] - srcX[i], srcY[j + 1] - srcY[j]};
+            const Rect d{dstX[i], dstY[j], dstX[i + 1] - dstX[i], dstY[j + 1] - dstY[j]};
+            if (s.w <= 0.0f || s.h <= 0.0f || d.w <= 0.0f || d.h <= 0.0f) continue;
+            drawImageRect(image, s, d, alpha);
+        }
+    }
+    restore();
+}
+
+void Context::drawVertices(const Vertex* verts, int nverts, int image, float alpha)
+{
+    if (verts == nullptr || nverts < 3 || image == 0) return;
+    State& state = mImpl->topState();
+    nverts -= nverts % 3;
+
+    std::vector<Vertex> xformed(verts, verts + nverts);
+    for (Vertex& v : xformed) {
+        transformPoint(v.x, v.y, state.xform.data(), v.x, v.y);
+        v.s = 0.0f;
+        v.t = 0.0f;
+    }
+    // The GL backend culls back faces; normalize each triangle to the winding the backend draws
+    // (same as text quads) so callers can supply either orientation, as with SkCanvas::drawVertices.
+    for (size_t i = 0; i + 2 < xformed.size(); i += 3) {
+        const Vertex& a = xformed[i];
+        const Vertex& b = xformed[i + 1];
+        const Vertex& c = xformed[i + 2];
+        // detail::cross returns dx1*dy0 - dx0*dy1, so a negative value means (a, b, c) is clockwise in y-down space.
+        if (detail::cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y) < 0.0f) std::swap(xformed[i + 1], xformed[i + 2]);
+    }
+
+    Paint paint{};
+    transformIdentity(paint.xform);
+    paint.innerColor = paint.outerColor = rgbaf(1.0f, 1.0f, 1.0f, alpha * state.alpha);
+    paint.image = image;
+
+    mImpl->params.renderTriangles(mImpl->params.userPtr, &paint, state.compositeOperation, &state.scissor, xformed.data(), nverts, mImpl->fringeWidth);
+    mImpl->drawCallCount++;
+    mImpl->fillTriCount += static_cast<size_t>(nverts / 3);
 }
 
 // Add fonts
