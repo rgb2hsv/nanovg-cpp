@@ -17,6 +17,7 @@
 //
 
 #pragma once
+#include <functional>
 #include <type_traits>
 #include <memory>
 
@@ -51,6 +52,8 @@ struct Color {
 };
 
 constexpr float nvgPi = 3.14159265358979323846264338327f;
+// Maximum number of values accepted by Context::strokeDashArray (an odd-length array is doubled, as in SVG).
+constexpr int maxStrokeDashes = 16;
 
 struct Paint {
     float xform[6];
@@ -158,6 +161,48 @@ enum class PointMode : int {
     Polygon = 2,  // The points are drawn as one connected, open polyline.
 };
 
+// Element drawn by Context::drawGrid.
+enum class GridShape : int {
+    Lines = 0,    // The (cols + 1) vertical and (rows + 1) horizontal lines bounding the cells; size is the line thickness.
+    Circles = 1,  // One circle centered in each cell; size is the radius.
+    Squares = 2,  // One axis-aligned square centered in each cell; size is the half side length (a "radius").
+};
+
+// Built-in shapes for stroke markers (see Context::markerStart). Each is defined in a unit box centered
+// on the path vertex, +x pointing along the marker's orientation, and scaled by Marker::size.
+enum class MarkerShape : int {
+    None = 0,     // No marker.
+    Arrow = 1,    // Triangle from x = -0.5 (base, 1 unit wide) to x = +0.5 (tip): points along the path.
+    Circle = 2,   // Circle of diameter 1.
+    Square = 3,   // Square of side 1.
+    Diamond = 4,  // Square of diagonal 1, rotated 45 degrees.
+    Bar = 5,      // Tick across the path: 1 unit long and one stroke width thick.
+    Custom = 6,   // Drawn by Marker::draw.
+};
+
+// How a marker is rotated at its vertex, like the SVG marker orient attribute.
+enum class MarkerOrient : int {
+    Auto = 0,              // Along the path direction (the bisector of the incoming and outgoing segments).
+    AutoStartReverse = 1,  // Like Auto, but the start marker points backwards (double-headed arrows).
+    Fixed = 2,             // Marker::angle radians, in the local coordinate system of the stroked path.
+};
+
+class Context;
+
+// A stroke marker, drawn at path vertices by Context::stroke (SVG marker-start / marker-mid /
+// marker-end with markerUnits="strokeWidth"). The marker frame has its origin on the vertex and +x along
+// the orientation, scaled so that 1 unit = size x the stroke width.
+struct Marker {
+    MarkerShape shape = MarkerShape::None;
+    float size = 3.0f;
+    MarkerOrient orient = MarkerOrient::Auto;
+    float angle = 0.0f;  // Used with MarkerOrient::Fixed.
+    // For MarkerShape::Custom: called with the context set up in the marker frame, the fill paint set to
+    // the stroke paint and the stroke width set to the stroked path's width. It may build and fill/stroke
+    // any paths; the caller's path and state are restored afterwards. Markers do not nest.
+    std::function<void(Context& ctx)> draw;
+};
+
 struct GlyphPosition {
     const char* str;   // Position of the glyph in the input string.
     float x;           // The x-coordinate of the logical glyph position.
@@ -245,6 +290,25 @@ struct Path {
     int convex;
 };
 
+// Analytic shape handed to Params::renderShape: the backend draws the given quad and computes the
+// shape's coverage per pixel in the fragment shader (instead of tessellating it), multiplying it into
+// the paint. Mirrored by NVGshape in the stable C API.
+enum class ShapeType : int {
+    None = 0,
+    GridLines = 1,    // params: x, y, w, h, cols, rows, line thickness
+    GridCircles = 2,  // params: x, y, w, h, cols, rows, radius
+    GridSquares = 3,  // params: x, y, w, h, cols, rows, half side
+    Arrow = 4,        // params: length, stalk half width, head half width, head length (tail at the origin, pointing along +x)
+};
+
+struct Shape {
+    int type;               // ShapeType
+    float strokeHalfWidth;  // 0 fills the shape; > 0 covers a band of this half width centered on its outline
+    float aaWidth;          // antialiasing ramp width in shape units (a tiny value gives hard edges)
+    float xform[6];         // shape space -> device space
+    float params[8];        // per ShapeType, see above
+};
+
 struct Params {
     void* userPtr;
     int edgeAntiAlias;
@@ -261,6 +325,9 @@ struct Params {
     void (*renderStroke)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths);
     void (*renderTriangles)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe);
     void (*renderDelete)(void* uptr);
+    // Optional (may be null): draws verts (device-space triangles) with paint, scaled by the coverage of
+    // shape. Context falls back to tessellated geometry when it is not set.
+    void (*renderShape)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const Shape* shape, const Vertex* verts, int nverts);
 };
 
 #ifdef _MSC_VER
@@ -300,6 +367,29 @@ public:
     void miterLimit(float limit);
     void strokeWidth(float size);
     void lineStyle(int lineStyle);
+    // SVG-style dashing for every stroke (stroke-dasharray / stroke-dashoffset). dashes alternates dash
+    // and gap lengths in local units, starting with a dash; an odd count is repeated to make it even, as
+    // in SVG. nullptr, count <= 0, a negative or non-finite value, or an all-zero array turns dashing
+    // off (solid strokes). Values past maxStrokeDashes are ignored. The pattern restarts on each subpath,
+    // and line caps are applied to both ends of every dash (so "0 8" with round caps draws dots).
+    void strokeDashArray(const float* dashes, int count);
+    // Same, parsed from an SVG stroke-dasharray value: lengths separated by commas and/or whitespace,
+    // each optionally suffixed with "px", e.g. "6 3", "4,2,1,2" or "none". An invalid string turns dashing off.
+    void strokeDashArray(const char* dashArray);
+    // Shifts the start of the dash pattern along each subpath, like SVG stroke-dashoffset (may be negative).
+    void strokeDashOffset(float offset);
+    // Markers drawn by every stroke() after the stroke itself, like SVG marker-start / marker-mid /
+    // marker-end: start at the path's first vertex, end at its last, mid at every vertex in between
+    // (including the ends of inner subpaths). Vertices are the end points of the path commands: an arc
+    // or ellipse counts as one segment, curves are not split at their tessellation points, and
+    // zero-length segments add no vertex. Markers are filled with the stroke paint by default and saved
+    // and restored with the rest of the state. Pass Marker{} to remove one. The Skia-style draw calls
+    // that stroke a path (drawLine, drawRect, ...) draw markers too; drawArrow and drawGrid do not.
+    void markerStart(const Marker& marker);
+    void markerMid(const Marker& marker);
+    void markerEnd(const Marker& marker);
+    // Sets all three, like the SVG marker shorthand.
+    void markers(const Marker& marker);
     void lineCap(int cap);
     void lineJoin(int join);
     void globalAlpha(float alpha);
@@ -333,9 +423,26 @@ public:
     void closePath();
     void pathWinding(int dir);
     void arc(float cx, float cy, float r, float a0, float a1, int dir);
+    // Elliptical arc from its center: radii rx, ry, the ellipse rotated by rotation (radians), from
+    // parametric angle a0 to a1 in direction dir (like arc, and like the canvas ellipse() angles).
+    // Connects to the current path with a line, or starts a new subpath if the path is empty.
+    void ellipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float a1, int dir);
+    // Elliptical arc from the current point to (x, y), with the parameters of the SVG path "A" command:
+    // radii rx, ry, the ellipse's x axis rotated by xAxisRotation (radians, not degrees as in SVG), and
+    // the largeArc / sweep flags choosing one of the four candidate arcs (sweep = clockwise on a y-down
+    // screen). Radii too small to span the endpoints are scaled up, a zero radius draws a straight line,
+    // and an endpoint equal to the current point draws nothing, all as in SVG. Starts a new subpath at
+    // (x, y) if the path is empty.
+    void ellipticalArcTo(float rx, float ry, float xAxisRotation, bool largeArc, bool sweep, float x, float y);
     void rect(float x, float y, float w, float h);
     void roundedRect(float x, float y, float w, float h, float r);
+    // Rounded rect with elliptical corners of radii rx (horizontal) and ry (vertical), like an SVG
+    // <rect rx ry>. Each radius is clamped to half the rect's width / height.
+    void roundedRect(float x, float y, float w, float h, float rx, float ry);
     void roundedRectVarying(float x, float y, float w, float h, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft);
+    // Per-corner elliptical radii (horizontal, vertical), clockwise from the top left.
+    void roundedRectVarying(float x, float y, float w, float h, float rxTopLeft, float ryTopLeft, float rxTopRight, float ryTopRight, float rxBottomRight, float ryBottomRight,
+                            float rxBottomLeft, float ryBottomLeft);
     void ellipse(float cx, float cy, float rx, float ry);
     void circle(float cx, float cy, float r);
     void fill();
@@ -351,12 +458,28 @@ public:
     // Replaces the pixels in the viewport (respecting scissor) with color, ignoring blending, like SkCanvas::clear.
     void clear(const Color& color);
     void drawLine(float x0, float y0, float x1, float y1);
+    // Arrow from the tail (x0, y0) to the tip (x1, y1), built as one closed outline: a stalk of
+    // stalkWidth topped by a triangular head headLength long (along the arrow) and headWidth wide
+    // (across it). headLength is clamped to the arrow's length and headWidth to at least stalkWidth.
+    // A stalkWidth of 0 gives a bare triangular head on a zero-width stalk (stroke it to see the line).
+    // With a backend that implements Params::renderShape the arrow is one quad whose coverage the
+    // fragment shader computes; strokes take that path when undashed and with round joins.
+    void drawArrow(float x0, float y0, float x1, float y1, float stalkWidth, float headWidth, float headLength, PaintStyle style = PaintStyle::Fill);
     // pts is an array of count (x, y) pairs, i.e. 2 * count floats.
+    // A cols x rows grid laid out over r. Lines are the union of bars of thickness size centered on the
+    // cell boundaries (Stroke outlines that union), so crossings do not double-blend. With a backend that
+    // implements Params::renderShape the grid is one quad whose coverage the fragment shader computes, so
+    // the cost does not grow with cols x rows; otherwise it falls back to a tessellated path. Strokes
+    // take the shader path for plain (undashed, LineStyle::Solid) strokes with miter joins for lines and
+    // squares; circles and squares also need to stay inside their cell.
+    void drawGrid(const Rect& r, int cols, int rows, GridShape shape, float size, PaintStyle style = PaintStyle::Fill);
     void drawPoints(PointMode mode, const float* pts, int count);
     void drawPoint(float x, float y);
     void drawPolygon(const float* pts, int count, PaintStyle style = PaintStyle::Fill);
     void drawRect(const Rect& r, PaintStyle style = PaintStyle::Fill);
     void drawRoundRect(const Rect& r, float radius, PaintStyle style = PaintStyle::Fill);
+    // Rounded rect with elliptical corners (rx horizontal, ry vertical), like SkCanvas::drawRoundRect.
+    void drawRoundRect(const Rect& r, float rx, float ry, PaintStyle style = PaintStyle::Fill);
     void drawRoundRectVarying(const Rect& r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, PaintStyle style = PaintStyle::Fill);
     // Fills the area between two rounded rects (outer minus inner), like SkCanvas::drawDRRect.
     void drawDRRect(const Rect& outer, float outerRadius, const Rect& inner, float innerRadius);
@@ -377,6 +500,20 @@ public:
     // Draws textured triangles (3 vertices per triangle). Vertex x/y are local coordinates and u/v are
     // normalized texture coordinates in [0, 1]; s/t are ignored. Like SkCanvas::drawVertices in triangle mode.
     void drawVertices(const Vertex* verts, int nverts, int image, float alpha = 1.0f);
+
+private:
+    // Appends an elliptical arc as cubic segments (at most 90 degrees each) from parametric angle a0
+    // through the signed sweep da. With connect the first point is joined by a line (or starts the
+    // path); otherwise the arc must start at the current point.
+    void appendEllipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float da, bool connect);
+    void strokePath(bool withMarkers);
+    void textInnerShadowPass(float x, float y, const char* string, const char* end);
+    void drawMarkers();
+    // Draws one shader-evaluated shape pass (fill or stroke) through Params::renderShape. Returns false,
+    // drawing nothing, when the backend has no renderShape or the shader cannot match the geometry path.
+    bool renderShapePass(ShapeType type, const float* params, const float* frame, const float* bounds, bool stroke);
+
+public:
     int createFont(const char* name, const char* filename);
     int createFontAtIndex(const char* name, const char* filename, const int fontIndex);
     int createFontMem(const char* name, unsigned char* data, int ndata, int freeData);
@@ -388,6 +525,20 @@ public:
     void resetFallbackFonts(const char* baseFont);
     void fontSize(float size);
     void fontBlur(float blur);
+    // Soft outer shadow drawn under all text from text() and textBox(), like CSS text-shadow: the glyphs
+    // again in color, offset by (offsetX, offsetY) and blurred by blur (both in local units, so they
+    // follow the transform and scale with it). The blur is the font atlas blur, so it adds to fontBlur and
+    // is capped at 20 device pixels; each distinct blur value caches its own glyphs, so avoid animating it
+    // continuously. A color with zero alpha turns the shadow off (the default). Saved with the state.
+    void textOuterShadow(float offsetX, float offsetY, float blur, const Color& color);
+    // Soft inner shadow drawn over all text from text() and textBox(), like an inset shadow in design
+    // tools: color inside the glyphs wherever a copy of them, offset by (offsetX, offsetY) and blurred by
+    // blur, does not cover them, so an offset down-right shades the top-left inner edges. The offset copy
+    // is of the whole string, so it may shade neighbouring letters too. Offset and blur are in local units
+    // (the blur matches textOuterShadow's but takes fractional values and is capped at 64 device pixels).
+    // Each call builds the mask on the CPU and draws it as one textured quad, so it works on any backend;
+    // the cost grows with the text's pixel area. Zero alpha turns it off (the default).
+    void textInnerShadow(float offsetX, float offsetY, float blur, const Color& color);
     void fontDilate(float dilate);
     void textLetterSpacing(float spacing);
     void textLineHeight(float lineHeight);

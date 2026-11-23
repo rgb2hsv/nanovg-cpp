@@ -411,26 +411,26 @@ void drawFancyText(nvg::Context& vg, float x, float y)
 
     vg.fontBlur(10);
     vg.fillColor(nvg::rgb(255, 0, 102));
-    vg.text(x, y, "Font Blur", NULL);
+    vg.text(x, y, "Blur", NULL);
     vg.fontBlur(0);
     vg.fillColor(nvg::rgb(255, 255, 255));
-    vg.text(x, y, "Font Blur", NULL);
+    vg.text(x, y, "Blur", NULL);
 
     vg.fontDilate(2);
     vg.fillColor(nvg::rgb(255, 0, 102));
-    vg.text(x, y + 40, "Font Outline", NULL);
+    vg.text(x, y + 40, "Outline", NULL);
     vg.fontDilate(0);
     vg.fillColor(nvg::rgb(255, 255, 255));
-    vg.text(x, y + 40, "Font Outline", NULL);
+    vg.text(x, y + 40, "Outline", NULL);
 
     vg.fontDilate(3);  // Dilate will always be applied before blur
     vg.fontBlur(2);
     vg.fillColor(nvg::rgb(255, 0, 102));
-    vg.text(x, y + 80, "Font Blur Outline", NULL);
+    vg.text(x, y + 80, "Blur Outline", NULL);
     vg.fontDilate(0);
     vg.fontBlur(0);
     vg.fillColor(nvg::rgb(255, 255, 255));
-    vg.text(x, y + 80, "Font Blur Outline", NULL);
+    vg.text(x, y + 80, "Blur Outline", NULL);
 }
 
 void drawEyes(nvg::Context& vg, float x, float y, float w, float h, float mx, float my, float t)
@@ -1287,7 +1287,6 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
 
     drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
     drawStylizedLines(vg, width - 245, 15, 180, 130);
-    drawFancyText(vg, width - 160, 170);
     drawParagraph(vg, width - 450, 50, 150, 100, mx, my);
     drawGraph(vg, 0, height / 2, width, height / 2, t);
     drawColorwheel(vg, width - 280, height - 320, 250.0f, 250.0f, t);
@@ -1379,6 +1378,9 @@ static void drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* t
     vg.fontSize(13.0f);
     vg.fontFace("sans-bold");
     vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Top));
+    // Shrink long titles so they stay inside narrow cells.
+    const float maxW = cell.w - 16.0f, titleW = vg.textBounds(0, 0, title, nullptr, nullptr);
+    if (titleW > maxW && maxW > 0.0f) vg.fontSize(13.0f * maxW / titleW);
     vg.fillColor(nvg::rgba(255, 255, 255, 180));
     vg.text(cell.x + 8, cell.y + 6, title, nullptr);
 }
@@ -1443,6 +1445,205 @@ static void demoLines(nvg::Context& vg, const nvg::Rect& c, float t)
         vg.strokeWidth(1.0f + i * 0.4f);
         vg.drawLine(cx + cosf(a) * 12, cy + sinf(a) * 12, cx + cosf(a) * 55, cy + sinf(a) * 55);
     }
+}
+
+static void demoArrows(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // Left: a fan of filled arrows whose head width, head length and stalk width grow together.
+    const float ox = c.x + 22, oy = c.y + c.h - 18;
+    for (int i = 0; i < 4; i++) {
+        const float a = -nvg::nvgPi * 0.5f + (i + 0.5f) * nvg::nvgPi * 0.125f + sinf(t + i) * 0.08f;
+        const float len = 95.0f + 8.0f * sinf(t * 1.3f + i);
+        vg.fillColor(nvg::hsla(0.55f + i * 0.08f, 0.7f, 0.6f, 255));
+        vg.drawArrow(ox, oy, ox + cosf(a) * len, oy + sinf(a) * len, 2.0f + i * 2.0f, 10.0f + i * 5.0f, 10.0f + i * 4.0f);
+    }
+
+    // Right: a rotating outlined arrow with a breathing head, and a stalk-less head below it.
+    const float cx = c.x + c.w - 62, cy = c.y + 75;
+    const float a = t * 0.7f;
+    const float headW = 22.0f + 10.0f * sinf(t * 2.0f);
+    vg.fillColor(nvg::rgba(255, 190, 60, 255));
+    vg.strokeColor(nvg::rgba(255, 255, 255, 230));
+    vg.strokeWidth(2.0f);
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Round));
+    vg.drawArrow(cx - cosf(a) * 40, cy - sinf(a) * 40, cx + cosf(a) * 40, cy + sinf(a) * 40, 8.0f, headW, 24.0f, nvg::PaintStyle::FillAndStroke);
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Miter));
+    vg.strokeColor(nvg::rgba(120, 230, 140, 255));
+    vg.strokeWidth(1.5f);
+    vg.drawArrow(cx - 45, c.y + c.h - 18, cx + 45, c.y + c.h - 18, 0.0f, 14.0f, 14.0f, nvg::PaintStyle::Stroke);
+}
+
+static void demoDashes(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    vg.strokeColor(nvg::rgba(255, 255, 255, 220));
+    vg.strokeWidth(3.0f);
+    vg.strokeDashArray("12 5");  // plain dashes
+    vg.drawLine(c.x + 15, c.y + 42, c.x + c.w - 15, c.y + 42);
+
+    vg.strokeColor(nvg::rgba(80, 200, 255, 255));
+    vg.strokeWidth(5.0f);
+    vg.lineCap(static_cast<int>(nvg::LineCap::Round));
+    const float dots[] = {0.0f, 10.0f};  // zero-length dashes + round caps = dots
+    vg.strokeDashArray(dots, 2);
+    vg.drawLine(c.x + 17, c.y + 62, c.x + c.w - 15, c.y + 62);
+
+    vg.strokeColor(nvg::rgba(255, 160, 0, 255));
+    vg.strokeWidth(3.0f);
+    vg.lineCap(static_cast<int>(nvg::LineCap::Butt));
+    vg.strokeDashArray("14, 4, 3, 4");  // dash-dot
+    vg.drawLine(c.x + 15, c.y + 82, c.x + c.w - 15, c.y + 82);
+
+    // Marching ants: an odd-length array ("8 4 2" -> "8 4 2 8 4 2") with an animated offset, on a curve.
+    vg.strokeColor(nvg::rgba(120, 230, 140, 255));
+    vg.strokeWidth(2.5f);
+    vg.strokeDashArray("8 4 2");
+    vg.strokeDashOffset(-t * 20.0f);
+    vg.beginPath();
+    vg.moveTo(c.x + 15, c.y + 130);
+    vg.bezierTo(c.x + 70, c.y + 80, c.x + 120, c.y + 180, c.x + c.w - 15, c.y + 110);
+    vg.stroke();
+    vg.restore();
+}
+
+static void demoGrid(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // Three 4x5 grids side by side, each with its thickness / radius animating.
+    const float gw = (c.w - 40) / 3.0f, gy = c.y + 42, gh = c.h - 56;
+    const nvg::Rect lines{c.x + 10, gy, gw, gh};
+    const nvg::Rect circles{c.x + 20 + gw, gy, gw, gh};
+    const nvg::Rect squares{c.x + 30 + gw * 2, gy, gw, gh};
+    vg.fillColor(nvg::rgba(80, 200, 255, 200));
+    vg.drawGrid(lines, 4, 5, nvg::GridShape::Lines, 2.0f + 1.5f * sinf(t * 1.5f));
+    vg.fillColor(nvg::rgba(255, 120, 160, 255));
+    vg.drawGrid(circles, 4, 5, nvg::GridShape::Circles, 4.0f + 2.0f * sinf(t * 1.5f + 1.0f));
+    vg.fillColor(nvg::rgba(255, 200, 60, 255));
+    vg.strokeColor(nvg::rgba(255, 255, 255, 200));
+    vg.strokeWidth(1.0f);
+    vg.drawGrid(squares, 4, 5, nvg::GridShape::Squares, 4.0f + 2.0f * sinf(t * 1.5f + 2.0f), nvg::PaintStyle::FillAndStroke);
+}
+
+static void demoMarkers(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    // A zigzag with a dot at the start, diamonds at the corners and an arrowhead at the end.
+    vg.strokeColor(nvg::rgba(80, 200, 255, 255));
+    vg.strokeWidth(2.0f);
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Round));
+    vg.markerStart(nvg::Marker{nvg::MarkerShape::Circle, 3.0f});
+    vg.markerMid(nvg::Marker{nvg::MarkerShape::Diamond, 3.5f});
+    vg.markerEnd(nvg::Marker{nvg::MarkerShape::Arrow, 5.0f});
+    vg.beginPath();
+    for (int i = 0; i < 5; i++) {
+        const float x = c.x + 20 + i * (c.w - 50) / 4.0f;
+        const float y = c.y + 62 + ((i & 1) ? 18.0f : -12.0f) + 5.0f * sinf(t * 2.0f + i);
+        if (i == 0)
+            vg.moveTo(x, y);
+        else
+            vg.lineTo(x, y);
+    }
+    vg.stroke();
+
+    // A double-headed curve: auto-start-reverse turns the start arrow around.
+    vg.markerMid(nvg::Marker{});
+    const nvg::Marker head{nvg::MarkerShape::Arrow, 4.0f, nvg::MarkerOrient::AutoStartReverse};
+    vg.markerStart(head);
+    vg.markerEnd(head);
+    vg.strokeColor(nvg::rgba(255, 160, 0, 255));
+    vg.beginPath();
+    vg.moveTo(c.x + 25, c.y + 125);
+    vg.bezierTo(c.x + 80, c.y + 95 + 25 * sinf(t), c.x + 160, c.y + 155 - 25 * sinf(t), c.x + c.w - 25, c.y + 118);
+    vg.stroke();
+
+    // A ruler: tick bars at the inner vertices and custom ring markers at the ends.
+    vg.strokeColor(nvg::rgba(120, 230, 140, 255));
+    vg.strokeWidth(1.5f);
+    vg.markerMid(nvg::Marker{nvg::MarkerShape::Bar, 6.0f, nvg::MarkerOrient::Auto});
+    nvg::Marker ring{nvg::MarkerShape::Custom, 1.0f};
+    ring.draw = [](nvg::Context& ctx) {
+        ctx.beginPath();
+        ctx.circle(0.0f, 0.0f, 3.0f);
+        ctx.stroke();
+    };
+    vg.markerStart(ring);
+    vg.markerEnd(ring);
+    vg.beginPath();
+    vg.moveTo(c.x + 25, c.y + 160);
+    for (int i = 1; i <= 8; i++) vg.lineTo(c.x + 25 + i * (c.w - 50) / 8.0f, c.y + 160);
+    vg.stroke();
+    vg.restore();
+}
+
+static void demoEllipticalArcs(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // The four SVG arcs between the same two points (largeArc x sweep), on a rotating ellipse.
+    const float x0 = c.x + 55, y0 = c.y + 110, x1 = c.x + 105, y1 = c.y + 85;
+    const float rot = 0.4f * sinf(t * 0.8f);
+    const nvg::Color colors[4] = {nvg::rgba(80, 200, 255, 255), nvg::rgba(255, 160, 0, 255), nvg::rgba(255, 90, 120, 255), nvg::rgba(120, 230, 140, 255)};
+    vg.strokeWidth(2.5f);
+    for (int i = 0; i < 4; i++) {
+        vg.strokeColor(colors[i]);
+        vg.beginPath();
+        vg.moveTo(x0, y0);
+        vg.ellipticalArcTo(42.0f, 24.0f, rot, (i & 2) != 0, (i & 1) != 0, x1, y1);
+        vg.stroke();
+    }
+    vg.fillColor(nvg::rgba(255, 255, 255, 255));
+    vg.drawCircle(x0, y0, 3.0f);
+    vg.drawCircle(x1, y1, 3.0f);
+
+    // A wedge cut from a rotated ellipse with the center form.
+    const float cx = c.x + c.w - 50, cy = c.y + 100;
+    vg.fillColor(nvg::rgba(255, 200, 60, 230));
+    vg.beginPath();
+    vg.moveTo(cx, cy);
+    vg.ellipticalArc(cx, cy, 38.0f, 22.0f, t * 0.6f, 0.3f, 0.3f + nvg::nvgPi * (1.2f + 0.5f * sinf(t)), static_cast<int>(nvg::Winding::CW));
+    vg.closePath();
+    vg.fill();
+}
+
+static void demoEllipticalCorners(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.fillPaint(vg.linearGradient(c.x, c.y + 40, c.x + c.w, c.y + c.h, nvg::rgba(120, 80, 255, 255), nvg::rgba(255, 90, 120, 255)));
+    vg.strokeColor(nvg::rgba(255, 255, 255, 220));
+    vg.strokeWidth(2.0f);
+    // rx and ry trade places over time: wide, flat corners turn into tall, narrow ones.
+    const float k = 0.5f + 0.5f * sinf(t * 1.3f);
+    vg.drawRoundRect(nvg::Rect{c.x + 12, c.y + 42, c.w * 0.5f - 18, c.h - 56}, 8.0f + 40.0f * k, 48.0f - 40.0f * k, nvg::PaintStyle::FillAndStroke);
+    // Per-corner elliptical radii.
+    vg.fillColor(nvg::rgba(80, 200, 255, 255));
+    vg.beginPath();
+    vg.roundedRectVarying(c.x + c.w * 0.5f + 6, c.y + 42, c.w * 0.5f - 18, c.h - 56, 50, 20, 4, 4, 30, 60 * k + 5, 10, 30);
+    vg.fill();
+    vg.stroke();
+}
+
+static void demoTextOuterShadow(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    vg.fontFace("sans-bold");
+    vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Middle));
+    vg.fontSize(28.0f);
+    // An outer shadow whose light source moves around.
+    vg.textOuterShadow(3.0f * cosf(t), 3.0f + 1.5f * sinf(t), 3.0f, nvg::rgba(0, 0, 0, 220));
+    vg.fillColor(nvg::rgba(255, 255, 255, 255));
+    vg.text(c.x + c.w * 0.18f, c.y + 62, "Outer", nullptr);
+    vg.textOuterShadow(0.0f, 0.0f, 0.0f, nvg::rgba(0, 0, 0, 0));
+    // An inner shadow: the offset, blurred copy shades the opposite inner edges.
+    vg.textInnerShadow(1.5f * cosf(t), 1.5f + 0.5f * sinf(t), 1.5f, nvg::rgba(120, 40, 0, 255));
+    vg.fillColor(nvg::rgba(255, 200, 60, 255));
+    vg.text(c.x + c.w * 0.5f, c.y + 62, "Inner", nullptr);
+    vg.textInnerShadow(0.0f, 0.0f, 0.0f, nvg::rgba(0, 0, 0, 0));
+    // No offset and a colored outer shadow make a glow.
+    vg.textOuterShadow(0.0f, 0.0f, 5.0f, nvg::rgba(80, 200, 255, 255));
+    vg.fillColor(nvg::rgba(230, 250, 255, 255));
+    vg.text(c.x + c.w * 0.82f, c.y + 62, "Glow", nullptr);
+    vg.textOuterShadow(0.0f, 0.0f, 0.0f, nvg::rgba(0, 0, 0, 0));
+    // The classic fontBlur / fontDilate effects, scaled down to fit under them.
+    vg.translate(c.x + c.w * 0.5f, c.y + 103);
+    vg.scale(0.6f, 0.6f);
+    drawFancyText(vg, 0.0f, 0.0f);
+    vg.restore();
 }
 
 static void demoPoints(nvg::Context& vg, const nvg::Rect& c, float t)
@@ -1601,7 +1802,7 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
     vg.fillColor(nvg::rgba(255, 255, 255, 220));
     vg.text(x + 12, y + 18, "Skia-style draw calls", nullptr);
 
-    constexpr int cols = 6, rows = 2;
+    constexpr int cols = 7, rows = 3;
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     constexpr float designW = 240.0f, designH = 175.0f;
     const float pad = 10.0f, top = 34.0f;
@@ -1614,12 +1815,17 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
         const char* title;
         void (*draw)(nvg::Context&, const nvg::Rect&, float, const DemoData&);
     };
-    static const Entry entries[cols * rows] = {
+    static const Entry entries[] = {
         {"drawRect / drawRoundRect", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoRects(v, c, tt); }},
         {"drawDRRect", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoDRRect(v, c, tt); }},
         {"drawCircle / drawOval", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoCircles(v, c, tt); }},
         {"drawArc", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoArcs(v, c, tt); }},
         {"drawLine", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoLines(v, c, tt); }},
+        {"drawArrow", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoArrows(v, c, tt); }},
+        {"strokeDashArray", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoDashes(v, c, tt); }},
+        {"markerStart / Mid / End", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoMarkers(v, c, tt); }},
+        {"ellipticalArcTo / Arc", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoEllipticalArcs(v, c, tt); }},
+        {"drawRoundRect(rx, ry)", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoEllipticalCorners(v, c, tt); }},
         {"drawPoints / drawPoint", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoPoints(v, c, tt); }},
         {"drawPolygon", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoPolygon(v, c, tt); }},
         {"drawPaint / drawColor", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoPaintAndColor(v, c, tt); }},
@@ -1627,9 +1833,12 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
         {"drawImageNine", demoNinePatch},
         {"drawVertices", demoVertices},
         {"clear", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoClear(v, c, tt); }},
+        {"drawGrid", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoGrid(v, c, tt); }},
+        {"textOuterShadow / Inner", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOuterShadow(v, c, tt); }},
     };
 
-    for (int i = 0; i < cols * rows; i++) {
+    static_assert(std::size(entries) <= cols * rows);
+    for (int i = 0; i < static_cast<int>(std::size(entries)); i++) {
         const nvg::Rect c{x + pad + (i % cols) * (cw + pad), y + top + (i / cols) * (ch + pad), cw, ch};
         vg.save();
         drawCallsCell(vg, c, entries[i].title);

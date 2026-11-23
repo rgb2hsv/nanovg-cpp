@@ -182,10 +182,16 @@ struct GLNVGfragUniforms {
     int lineStyle;
     int texType;
     int type;
+    int shapeType;  // NVGshapeType; 0 = none
+    float shapeAA;
+    float shapeStrokeHalf;
+    float shapeMat[12];  // device -> shape space
+    float shapeRect[4];  // NVGshape.params[0..3]
+    float shapeGrid[4];  // NVGshape.params[4..7]
 #else
 // note: after modifying layout or size of uniform array,
 // don't forget to also update the fragment shader source!
-#define NANOVG_GL_UNIFORMARRAY_SIZE 12
+#define NANOVG_GL_UNIFORMARRAY_SIZE 17
     union {
         struct {
             float scissorMat[12];  // matrices are actually 3 vec4s
@@ -202,9 +208,12 @@ struct GLNVGfragUniforms {
             float lineStyle;
             float texType;
             float type;
-            float unused1;
-            float unused2;
-            float unused3;
+            float shapeType;  // NVGshapeType; 0 = none
+            float shapeAA;
+            float shapeStrokeHalf;
+            float shapeMat[12];  // device -> shape space
+            float shapeRect[4];  // NVGshape.params[0..3]
+            float shapeGrid[4];  // NVGshape.params[4..7]
         };
         float uniformArray[NANOVG_GL_UNIFORMARRAY_SIZE][4];
     };
@@ -503,7 +512,7 @@ static int glnvg__renderCreate(void* uptr)
 #if NANOVG_GL_USE_UNIFORMBUFFER
         "#define USE_UNIFORMBUFFER 1\n"
 #else
-        "#define UNIFORMARRAY_SIZE 12\n"
+        "#define UNIFORMARRAY_SIZE 17\n"
 #endif
         "\n";
 
@@ -555,6 +564,12 @@ static int glnvg__renderCreate(void* uptr)
         "   int lineStyle;\n"
         "		int texType;\n"
         "		int type;\n"
+        "		int shapeType;\n"
+        "		float shapeAA;\n"
+        "		float shapeStrokeHalf;\n"
+        "		mat3 shapeMat;\n"
+        "		vec4 shapeRect;\n"
+        "		vec4 shapeGrid;\n"
         "	};\n"
         "#else\n"  // NANOVG_GL3 && !USE_UNIFORMBUFFER
         "	uniform vec4 frag[UNIFORMARRAY_SIZE];\n"
@@ -586,7 +601,62 @@ static int glnvg__renderCreate(void* uptr)
         "	#define lineStyle int(frag[10].z)\n"
         "	#define texType int(frag[10].w)\n"
         "	#define type int(frag[11].x)\n"
+        "	#define shapeType int(frag[11].y)\n"
+        "	#define shapeAA frag[11].z\n"
+        "	#define shapeStrokeHalf frag[11].w\n"
+        "	#define shapeMat mat3(frag[12].xyz, frag[13].xyz, frag[14].xyz)\n"
+        "	#define shapeRect frag[15]\n"
+        "	#define shapeGrid frag[16]\n"
         "#endif\n"
+        "// Analytic shapes (drawGrid / drawArrow): coverage of the shape at p (shape space).\n"
+        "float shapeSegDist(vec2 p, vec2 a, vec2 b) {\n"
+        "	vec2 pa = p - a, ba = b - a;\n"
+        "	float l = dot(ba, ba);\n"
+        "	float h = l > 0.0 ? clamp(dot(pa, ba) / l, 0.0, 1.0) : 0.0;\n"
+        "	return length(pa - ba * h);\n"
+        "}\n"
+        "// Coverage of an axis-aligned box with sharp corners (center c, half extents e).\n"
+        "float shapeBox(vec2 p, vec2 c, vec2 e) {\n"
+        "	vec2 q = clamp((e - abs(p - c)) / shapeAA + 0.5, 0.0, 1.0);\n"
+        "	return q.x * q.y;\n"
+        "}\n"
+        "// Coverage from a signed distance (negative inside).\n"
+        "float shapeFromDist(float d) {\n"
+        "	if (shapeStrokeHalf > 0.0) d = abs(d) - shapeStrokeHalf;\n"
+        "	return clamp(0.5 - d / shapeAA, 0.0, 1.0);\n"
+        "}\n"
+        "// Union of the nearest vertical and horizontal grid bars, each grown by g on every side.\n"
+        "float shapeGridLines(vec2 p, vec2 nearest, float g) {\n"
+        "	vec2 o = shapeRect.xy, sz = shapeRect.zw, c = o + sz * 0.5;\n"
+        "	float t = shapeGrid.z * 0.5 + g;\n"
+        "	float v = shapeBox(p, vec2(nearest.x, c.y), vec2(t, sz.y * 0.5 + t));\n"
+        "	float h = shapeBox(p, vec2(c.x, nearest.y), vec2(sz.x * 0.5 + t, t));\n"
+        "	return max(v, h);\n"
+        "}\n"
+        "float shapeCoverage(vec2 p) {\n"
+        "	float hs = shapeStrokeHalf;\n"
+        "	if (shapeType == 4) {  // Arrow along +x from the origin, symmetric about the x axis.\n"
+        "		vec2 q = vec2(p.x, abs(p.y));\n"
+        "		float len = shapeRect.x, s = shapeRect.y, hw = shapeRect.z, hl = shapeRect.w, b = len - hl;\n"
+        "		float d = min(shapeSegDist(q, vec2(0.0, 0.0), vec2(0.0, s)), shapeSegDist(q, vec2(0.0, s), vec2(b, s)));\n"
+        "		d = min(d, shapeSegDist(q, vec2(b, s), vec2(b, hw)));\n"
+        "		d = min(d, shapeSegDist(q, vec2(b, hw), vec2(len, 0.0)));\n"
+        "		bool inside = (q.x >= 0.0 && q.x <= b && q.y <= s) || (hl > 0.0 && q.x >= b && q.x <= len && q.y * hl <= hw * (len - q.x));\n"
+        "		return shapeFromDist(inside ? -d : d);\n"
+        "	}\n"
+        "	vec2 o = shapeRect.xy, n = shapeGrid.xy, cell = shapeRect.zw / n;\n"
+        "	float size = shapeGrid.z;\n"
+        "	if (shapeType == 1) {  // Grid lines: nearest boundary in each axis.\n"
+        "		vec2 nearest = o + clamp(floor((p - o) / cell + 0.5), vec2(0.0), n) * cell;\n"
+        "		if (hs <= 0.0) return shapeGridLines(p, nearest, 0.0);\n"
+        "		return clamp(shapeGridLines(p, nearest, hs) - shapeGridLines(p, nearest, -hs), 0.0, 1.0);\n"
+        "	}\n"
+        "	// Circles / squares: the element of the cell containing p.\n"
+        "	vec2 c = o + (clamp(floor((p - o) / cell), vec2(0.0), n - 1.0) + 0.5) * cell;\n"
+        "	if (shapeType == 2) return shapeFromDist(length(p - c) - size);\n"
+        "	if (hs <= 0.0) return shapeBox(p, c, vec2(size));\n"
+        "	return clamp(shapeBox(p, c, vec2(size + hs)) - shapeBox(p, c, vec2(size - hs)), 0.0, 1.0);\n"
+        "}\n"
         "\n"
         "float sdroundrect(vec2 pt, vec2 ext, float rad) {\n"
         "	vec2 ext2 = ext - vec2(rad,rad);\n"
@@ -680,6 +750,7 @@ static int glnvg__renderCreate(void* uptr)
         "		color *= scissor;\n"
         "		result = color * innerCol;\n"
         "	}\n"
+        "	if (shapeType != 0) result *= shapeCoverage((shapeMat * vec3(fpos, 1.0)).xy);\n"
         "#ifdef NANOVG_GL3\n"
         "	outColor = result;\n"
         "#else\n"
@@ -1525,6 +1596,48 @@ error:
     if (gl->ncalls > 0) gl->ncalls--;
 }
 
+static void glnvg__renderShape(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, const NVGshape* shape, const NVGvertex* verts, int nverts)
+{
+    GLNVGcontext* gl = (GLNVGcontext*)uptr;
+    GLNVGcall* call = glnvg__allocCall(gl);
+    GLNVGfragUniforms* frag;
+    float inv[6];
+
+    if (call == NULL) return;
+
+    call->type = GLNVG_TRIANGLES;
+    call->image = paint->image;
+    call->blendFunc = glnvg__blendCompositeOperation(compositeOperation);
+
+    call->triangleOffset = glnvg__allocVerts(gl, nverts);
+    if (call->triangleOffset == -1) goto error;
+    call->triangleCount = nverts;
+    memcpy(&gl->verts[call->triangleOffset], verts, sizeof(NVGvertex) * nverts);
+
+    // A regular paint (gradient or image) whose result the shader scales by the shape's coverage.
+    call->uniformOffset = glnvg__allocFragUniforms(gl, 1);
+    if (call->uniformOffset == -1) goto error;
+    frag = nvg__fragUniformPtr(gl, call->uniformOffset);
+    if (glnvg__convertPaint(gl, frag, paint, scissor, fringe, fringe, -1.0f, 0) == 0) goto error;
+    if (nvgTransformInverse(inv, shape->xform) == 0) goto error;
+    glnvg__xformToMat3x4(frag->shapeMat, inv);
+#if NANOVG_GL_USE_UNIFORMBUFFER
+    frag->shapeType = shape->type;
+#else
+    frag->shapeType = (float)shape->type;
+#endif
+    frag->shapeAA = shape->aaWidth;
+    frag->shapeStrokeHalf = shape->strokeHalfWidth;
+    memcpy(frag->shapeRect, shape->params, sizeof(frag->shapeRect));
+    memcpy(frag->shapeGrid, shape->params + 4, sizeof(frag->shapeGrid));
+    return;
+
+error:
+    // We get here if call alloc was ok, but something else is not.
+    // Roll back the last call to prevent drawing it.
+    if (gl->ncalls > 0) gl->ncalls--;
+}
+
 static void glnvg__renderDelete(void* uptr)
 {
     GLNVGcontext* gl = (GLNVGcontext*)uptr;
@@ -1583,6 +1696,7 @@ NVGcontext* nvgCreateGLES3(int flags)
     params.renderFill = glnvg__renderFill;
     params.renderStroke = glnvg__renderStroke;
     params.renderTriangles = glnvg__renderTriangles;
+    params.renderShape = glnvg__renderShape;
     params.renderDelete = glnvg__renderDelete;
     params.userPtr = gl;
     params.edgeAntiAlias = flags & NVG_ANTIALIAS ? 1 : 0;

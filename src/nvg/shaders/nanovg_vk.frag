@@ -19,6 +19,12 @@ struct FragUniforms {
     int lineStyle;
     int texType;
     int type;
+    int shapeType;  // 0 = none, else nvg::ShapeType
+    float shapeAA;
+    float shapeStrokeHalf;
+    mat3 shapeMat;  // device -> shape space
+    vec4 shapeRect;
+    vec4 shapeGrid;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer FragBuffer {
@@ -78,6 +84,62 @@ float dotted(vec2 p)
     return smoothstep(0.0, 1.0, 6.0 * (0.25 - (p.x * p.x + fy * fy)));
 }
 
+// Shape uniforms of the current draw, copied here by main() so the shape code matches the GL shaders.
+int shapeType;
+float shapeAA;
+float shapeStrokeHalf;
+vec4 shapeRect;
+vec4 shapeGrid;
+// Analytic shapes (drawGrid / drawArrow): coverage of the shape at p (shape space).
+float shapeSegDist(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a, ba = b - a;
+    float l = dot(ba, ba);
+    float h = l > 0.0 ? clamp(dot(pa, ba) / l, 0.0, 1.0) : 0.0;
+    return length(pa - ba * h);
+}
+// Coverage of an axis-aligned box with sharp corners (center c, half extents e).
+float shapeBox(vec2 p, vec2 c, vec2 e) {
+    vec2 q = clamp((e - abs(p - c)) / shapeAA + 0.5, 0.0, 1.0);
+    return q.x * q.y;
+}
+// Coverage from a signed distance (negative inside).
+float shapeFromDist(float d) {
+    if (shapeStrokeHalf > 0.0) d = abs(d) - shapeStrokeHalf;
+    return clamp(0.5 - d / shapeAA, 0.0, 1.0);
+}
+// Union of the nearest vertical and horizontal grid bars, each grown by g on every side.
+float shapeGridLines(vec2 p, vec2 nearest, float g) {
+    vec2 o = shapeRect.xy, sz = shapeRect.zw, c = o + sz * 0.5;
+    float t = shapeGrid.z * 0.5 + g;
+    float v = shapeBox(p, vec2(nearest.x, c.y), vec2(t, sz.y * 0.5 + t));
+    float h = shapeBox(p, vec2(c.x, nearest.y), vec2(sz.x * 0.5 + t, t));
+    return max(v, h);
+}
+float shapeCoverage(vec2 p) {
+    float hs = shapeStrokeHalf;
+    if (shapeType == 4) {  // Arrow along +x from the origin, symmetric about the x axis.
+        vec2 q = vec2(p.x, abs(p.y));
+        float len = shapeRect.x, s = shapeRect.y, hw = shapeRect.z, hl = shapeRect.w, b = len - hl;
+        float d = min(shapeSegDist(q, vec2(0.0, 0.0), vec2(0.0, s)), shapeSegDist(q, vec2(0.0, s), vec2(b, s)));
+        d = min(d, shapeSegDist(q, vec2(b, s), vec2(b, hw)));
+        d = min(d, shapeSegDist(q, vec2(b, hw), vec2(len, 0.0)));
+        bool inside = (q.x >= 0.0 && q.x <= b && q.y <= s) || (hl > 0.0 && q.x >= b && q.x <= len && q.y * hl <= hw * (len - q.x));
+        return shapeFromDist(inside ? -d : d);
+    }
+    vec2 o = shapeRect.xy, n = shapeGrid.xy, cell = shapeRect.zw / n;
+    float size = shapeGrid.z;
+    if (shapeType == 1) {  // Grid lines: nearest boundary in each axis.
+        vec2 nearest = o + clamp(floor((p - o) / cell + 0.5), vec2(0.0), n) * cell;
+        if (hs <= 0.0) return shapeGridLines(p, nearest, 0.0);
+        return clamp(shapeGridLines(p, nearest, hs) - shapeGridLines(p, nearest, -hs), 0.0, 1.0);
+    }
+    // Circles / squares: the element of the cell containing p.
+    vec2 c = o + (clamp(floor((p - o) / cell), vec2(0.0), n - 1.0) + 0.5) * cell;
+    if (shapeType == 2) return shapeFromDist(length(p - c) - size);
+    if (hs <= 0.0) return shapeBox(p, c, vec2(size));
+    return clamp(shapeBox(p, c, vec2(size + hs)) - shapeBox(p, c, vec2(size - hs)), 0.0, 1.0);
+}
+
 // Stroke - from [0..1] to clipped pyramid, where the slope is 1px.
 float strokeMask(FragUniforms f)
 {
@@ -122,6 +184,14 @@ void main(void)
         if (f.texType == 2) color = vec4(color.x);
         color *= scissor;
         result = color * f.innerCol;
+    }
+    if (f.shapeType != 0) {
+        shapeType = f.shapeType;
+        shapeAA = f.shapeAA;
+        shapeStrokeHalf = f.shapeStrokeHalf;
+        shapeRect = f.shapeRect;
+        shapeGrid = f.shapeGrid;
+        result *= shapeCoverage((f.shapeMat * vec3(fpos, 1.0)).xy);
     }
     outColor = result;
 }

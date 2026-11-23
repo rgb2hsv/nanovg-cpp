@@ -165,9 +165,15 @@ struct FragUniforms {
     int lineStyle;
     int texType;
     int type;
-    int pad[3];
+    int shapeType;  // ShapeType; 0 = none
+    float shapeAA;
+    float shapeStrokeHalf;
+    float shapeMat[12];  // device -> shape space (3 vec4 columns)
+    float shapeRect[4];  // Shape::params[0..3]
+    float shapeGrid[4];  // Shape::params[4..7]
 };
-static_assert(sizeof(FragUniforms) == 192, "FragUniforms must match the std430 array stride of the shader struct");
+static_assert(sizeof(FragUniforms) == 272, "FragUniforms must match the std430 array stride of the shader struct");
+static_assert(offsetof(FragUniforms, shapeMat) == 192, "mat3 in std430 is 16-byte aligned");
 
 struct PushConstants {
     float viewSize[2];
@@ -1436,6 +1442,33 @@ static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState co
     vk->calls.push_back(call);
 }
 
+static void renderShape(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const Shape* shape, const Vertex* verts, int nverts)
+{
+    VkContext* vk = static_cast<VkContext*>(uptr);
+    std::array<float, 6> inv{};
+    if (transformInverse(inv.data(), shape->xform) == 0) return;
+
+    Call call{};
+    call.type = CallTriangles;
+    call.image = paint->image;
+    call.blend = blendCompositeOperation(compositeOperation);
+    call.triangleOffset = allocVerts(vk, nverts);
+    call.triangleCount = nverts;
+    std::memcpy(&vk->verts[call.triangleOffset], verts, sizeof(Vertex) * nverts);
+
+    // A regular paint (gradient or image) whose result the shader scales by the shape's coverage.
+    call.uniformOffset = allocUniforms(vk, 1);
+    FragUniforms* frag = &vk->uniforms[call.uniformOffset];
+    if (!convertPaint(vk, frag, paint, scissor, fringe, fringe, -1.0f, 0)) return;
+    xformToMat3x4(frag->shapeMat, inv.data());
+    frag->shapeType = shape->type;
+    frag->shapeAA = shape->aaWidth;
+    frag->shapeStrokeHalf = shape->strokeHalfWidth;
+    std::memcpy(frag->shapeRect, shape->params, sizeof(frag->shapeRect));
+    std::memcpy(frag->shapeGrid, shape->params + 4, sizeof(frag->shapeGrid));
+    vk->calls.push_back(call);
+}
+
 static void renderDelete(void* uptr)
 {
     VkContext* vk = static_cast<VkContext*>(uptr);
@@ -1502,6 +1535,7 @@ static VkContext* newContext(const VkCreateInfo& createInfo, int flags, Params* 
     params->renderFill = renderFill;
     params->renderStroke = renderStroke;
     params->renderTriangles = renderTriangles;
+    params->renderShape = renderShape;
     params->renderDelete = renderDelete;
     params->userPtr = vk;
     params->edgeAntiAlias = (flags & CreateFlags::Antialias) ? 1 : 0;
@@ -1556,7 +1590,7 @@ static VkImageView imageHandle(VkContext* vk, int image)
 
 std::unique_ptr<Context> createVk(const VkCreateInfo& createInfo, int flags)
 {
-    Params params;
+    Params params{};
     vkdetail::VkContext* vk = vkdetail::newContext(createInfo, flags, &params);
     if (vk == nullptr) return nullptr;
     try {

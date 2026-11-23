@@ -36,7 +36,7 @@ NVGcontext* nvgCreateVk(const NVGvkCreateInfo* createInfo, int flags)
     info.getInstanceProcAddr = createInfo->getInstanceProcAddr;
     info.allocator = createInfo->allocator;
 
-    nvg::Params params;
+    nvg::Params params{};
     nvg::vkdetail::VkContext* vk = nvg::vkdetail::newContext(info, flags, &params);
     if (vk == nullptr) return nullptr;
     NVGcontext* ctx = nvgCreateInternal(reinterpret_cast<NVGparams*>(&params));

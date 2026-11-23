@@ -10,6 +10,7 @@
 #include "nanovg_detail.hpp"
 
 #include <array>
+#include <cmath>
 #include <vector>
 
 #include "../thirdParty/fontstash.h"
@@ -201,6 +202,7 @@ void ContextImpl::flattenPaths()
                 i += 3;
                 break;
             case static_cast<int>(PathCommand::BezierTo):
+            case static_cast<int>(PathCommand::BezierContinue):
                 last = lastPoint();
                 if (last != NULL) {
                     cp1 = &commands[i + 1];
@@ -223,10 +225,7 @@ void ContextImpl::flattenPaths()
         }
     }
 
-    cache->bounds[0] = cache->bounds[1] = 1e6f;
-    cache->bounds[2] = cache->bounds[3] = -1e6f;
-
-    // Calculate the direction and length of line segments.
+    // Close and orient each path; measurePaths then calculates segment directions and bounds.
     for (j = 0; j < static_cast<int>(cache->paths.size()); j++) {
         path = &cache->paths[j];
         pts = &cache->points[path->first];
@@ -254,20 +253,129 @@ void ContextImpl::flattenPaths()
             }
         }
 
-        for (i = 0; i < path->count; i++) {
-            // Calculate segment direction and length
+    }
+
+    measurePaths();
+}
+
+// Calculates the direction and length of every segment and the cache bounds.
+void ContextImpl::measurePaths()
+{
+    cache->bounds[0] = cache->bounds[1] = 1e6f;
+    cache->bounds[2] = cache->bounds[3] = -1e6f;
+
+    for (Path& path : cache->paths) {
+        if (path.count <= 0) continue;
+        Point* pts = &cache->points[path.first];
+        Point* p0 = &pts[path.count - 1];
+        Point* p1 = &pts[0];
+        for (int i = 0; i < path.count; i++) {
             p0->dx = p1->x - p0->x;
             p0->dy = p1->y - p0->y;
             p0->len = detail::normalize(p0->dx, p0->dy);
-            // Update bounds
             cache->bounds[0] = detail::minf(cache->bounds[0], p0->x);
             cache->bounds[1] = detail::minf(cache->bounds[1], p0->y);
             cache->bounds[2] = detail::maxf(cache->bounds[2], p0->x);
             cache->bounds[3] = detail::maxf(cache->bounds[3], p0->y);
-            // Advance
             p0 = p1++;
         }
     }
+}
+
+// Replaces the flattened paths in the cache with one open path per dash, following SVG
+// stroke-dasharray semantics. dashes is an even-length array of device-space lengths with a positive
+// sum. The pattern restarts at the beginning of every subpath, in the subpath's original direction.
+void ContextImpl::dashPaths(const float* dashes, int ndashes, float offset, int lineCap)
+{
+    float total = 0.0f;
+    for (int i = 0; i < ndashes; i++) total += dashes[i];
+    if (ndashes <= 0 || !(total > 0.0f)) return;
+
+    // Where the pattern stands at the start of each subpath.
+    float phase = std::fmod(offset, total);
+    if (phase < 0.0f) phase += total;
+    int startIdx = 0;
+    // Skip whole intervals, but stay on a zero-length dash that starts exactly here.
+    while (phase >= dashes[startIdx] && !(phase == 0.0f && dashes[startIdx] == 0.0f)) {
+        phase -= dashes[startIdx];
+        startIdx = (startIdx + 1) % ndashes;
+    }
+
+    const std::vector<Point> srcPts = cache->points;
+    const std::vector<Path> srcPaths = cache->paths;
+    cache->points.clear();
+    cache->paths.clear();
+
+    const bool keepDots = lineCap != static_cast<int>(LineCap::Butt);
+    auto beginDash = [&](float x, float y) {
+        appendPath();
+        addPoint(x, y, static_cast<int>(PointFlags::Corner));
+    };
+    // Ends the current dash. A dash that collapsed to one point is a zero-length dash: SVG draws it
+    // as a cap-shaped dot for round/square caps, so give it a tiny extent along the path direction.
+    auto endDash = [&](float dirx, float diry) {
+        Path* path = lastPath();
+        if (path == nullptr || path->count >= 2) return;
+        if (path->count == 1 && keepDots) {
+            Point p = cache->points.back();
+            const float e = distTol;
+            cache->points.back().x = p.x - dirx * e;
+            cache->points.back().y = p.y - diry * e;
+            addPoint(p.x + dirx * e, p.y + diry * e, static_cast<int>(PointFlags::Corner));
+            if (path->count >= 2) return;
+        }
+        cache->points.resize(static_cast<size_t>(path->first));
+        cache->paths.pop_back();
+    };
+
+    for (const Path& src : srcPaths) {
+        const int n = src.count;
+        if (n < 2) continue;
+        // flattenPaths may have reversed the points to enforce winding; walk them in drawing order.
+        auto at = [&](int k) -> const Point& { return srcPts[static_cast<size_t>(src.first + (src.reversed ? n - 1 - k : k))]; };
+        const int nseg = src.closed ? n : n - 1;
+
+        int idx = startIdx;
+        float remaining = dashes[idx] - phase;
+        bool on = (idx % 2) == 0;
+        float dirx = 1.0f, diry = 0.0f;
+        if (on) beginDash(at(0).x, at(0).y);
+
+        for (int s = 0; s < nseg; s++) {
+            const Point& p0 = at(s);
+            const Point& p1 = at((s + 1) % n);
+            float dx = p1.x - p0.x, dy = p1.y - p0.y;
+            const float segLen = detail::normalize(dx, dy);
+            if (segLen <= 0.0f) continue;
+            dirx = dx;
+            diry = dy;
+
+            // Consume the segment interval by interval. Terminates because the pattern has a
+            // positive total, so a positive interval eventually outlasts what is left of it.
+            float t = 0.0f;
+            for (;;) {
+                const float left = segLen - t;
+                if (remaining > left) {
+                    remaining -= left;
+                    break;
+                }
+                t += remaining;
+                const float x = p0.x + dx * t, y = p0.y + dy * t;
+                if (on) {
+                    addPoint(x, y, static_cast<int>(PointFlags::Corner));
+                    endDash(dx, dy);
+                }
+                idx = (idx + 1) % ndashes;
+                on = !on;
+                remaining = dashes[idx];
+                if (on) beginDash(x, y);
+            }
+            if (on) addPoint(p1.x, p1.y, p1.flags & static_cast<unsigned char>(PointFlags::Corner));
+        }
+        if (on) endDash(dirx, diry);
+    }
+
+    measurePaths();
 }
 
 void ContextImpl::calculateJoins(float w, int lineJoin, float miterLimit)
