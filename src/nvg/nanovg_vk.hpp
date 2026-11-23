@@ -97,7 +97,11 @@ VkImageView imageHandleVk(Context& ctx, int image);
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
+#include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace nvg
@@ -123,7 +127,8 @@ namespace vkdetail
     X(CreateCommandPool) X(DestroyCommandPool) X(AllocateCommandBuffers) X(FreeCommandBuffers) \
     X(BeginCommandBuffer) X(EndCommandBuffer) X(ResetCommandBuffer) \
     X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle) \
-    X(CmdBindPipeline) X(CmdBindDescriptorSets) X(CmdBindVertexBuffers) X(CmdPushConstants) X(CmdDraw) \
+    X(CmdBindPipeline) X(CmdBindDescriptorSets) X(CmdBindVertexBuffers) X(CmdBindIndexBuffer) X(CmdPushConstants) \
+    X(CmdDraw) X(CmdDrawIndexed) \
     X(CmdSetViewport) X(CmdSetScissor) X(CmdPipelineBarrier) X(CmdCopyBufferToImage) X(CmdClearColorImage) \
     X(CmdBlitImage)
 // clang-format on
@@ -182,22 +187,68 @@ struct Blend {
     VkBlendFactor dstAlpha;
 };
 
+inline bool operator==(const Blend& a, const Blend& b)
+{
+    return a.srcRGB == b.srcRGB && a.dstRGB == b.dstRGB && a.srcAlpha == b.srcAlpha && a.dstAlpha == b.dstAlpha;
+}
+
+// Every path primitive is drawn as an indexed triangle list: fans and strips are converted to indices at record
+// time, so all the paths of a call (and consecutive compatible calls) collapse into a single vkCmdDrawIndexed and
+// switching between fill and fringe passes never changes the pipeline topology.
 struct Call {
     int type;
     int image;
-    int pathOffset;
-    int pathCount;
-    int triangleOffset;
-    int triangleCount;
+    int first;  // CallFill: stencil fill indices. CallConvexFill / CallStroke: all indices. CallTriangles: first vertex.
+    int count;
+    int fringeFirst;  // CallFill: anti-aliased fringe indices
+    int fringeCount;
+    int coverFirst;  // CallFill: 6 indices of the bounding box quad
     int uniformOffset;  // in FragUniforms elements
     Blend blend;
 };
 
-struct DrawPath {
-    int fillOffset;
-    int fillCount;
-    int strokeOffset;
-    int strokeCount;
+// Growable array of trivially copyable elements that never value-initializes what it hands out.
+template <typename T>
+class PodArray
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+
+public:
+    PodArray() = default;
+    PodArray(const PodArray&) = delete;
+    PodArray& operator=(const PodArray&) = delete;
+    ~PodArray() { std::free(mData); }
+
+    T* data() { return mData; }
+    const T* data() const { return mData; }
+    size_t size() const { return mSize; }
+    bool empty() const { return mSize == 0; }
+    void clear() { mSize = 0; }
+    T& operator[](size_t i) { return mData[i]; }
+    const T& operator[](size_t i) const { return mData[i]; }
+    T& back() { return mData[mSize - 1]; }
+    void shrink(size_t count) { mSize -= count; }
+
+    // Appends `count` uninitialized elements and returns a pointer to the first one.
+    T* grow(size_t count)
+    {
+        if (mSize + count > mCapacity) {
+            size_t cap = std::max<size_t>(mCapacity * 2, 256);
+            while (cap < mSize + count) cap *= 2;
+            T* p = static_cast<T*>(std::realloc(mData, cap * sizeof(T)));
+            if (p == nullptr) throw std::bad_alloc();
+            mData = p;
+            mCapacity = cap;
+        }
+        T* out = mData + mSize;
+        mSize += count;
+        return out;
+    }
+
+private:
+    T* mData = nullptr;
+    size_t mSize = 0;
+    size_t mCapacity = 0;
 };
 
 struct Buffer {
@@ -237,6 +288,8 @@ struct FrameData {
 
     Buffer vertices;
     VkDeviceSize verticesUsed = 0;
+    Buffer indices;
+    VkDeviceSize indicesUsed = 0;
     Buffer uniforms;
     VkDeviceSize uniformsUsed = 0;
     VkDescriptorSet uniformSet = VK_NULL_HANDLE;
@@ -266,7 +319,7 @@ struct VkContext {
     VkDescriptorSetLayout textureSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
-    std::map<uint64_t, VkPipeline> pipelines;
+    std::unordered_map<uint64_t, VkPipeline> pipelines;
     std::map<int, VkSampler> samplers;
     std::vector<VkDescriptorPool> descriptorPools;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -275,22 +328,26 @@ struct VkContext {
     uint32_t frameIndex = 0;
 
     std::vector<TextureVk> textures;
+    std::unordered_map<int, size_t> textureSlots;  // texture id -> index in textures
     int textureId = 0;
     int dummyTex = 0;
+    VkDescriptorSet dummySet = VK_NULL_HANDLE;
 
     float view[2] = {0.0f, 0.0f};
     float devicePixelRatio = 1.0f;
 
-    // Per frame buffers
-    std::vector<Call> calls;
-    std::vector<DrawPath> paths;
-    std::vector<Vertex> verts;
-    std::vector<FragUniforms> uniforms;
+    // Per flush buffers
+    PodArray<Call> calls;
+    PodArray<Vertex> verts;
+    PodArray<uint32_t> indices;  // into verts
+    PodArray<FragUniforms> uniforms;
+    int simpleUniform = -1;  // shared uniform of the stencil-only fill pass, allocated on first use per flush
 
     // Bind state during flush
     VkPipeline boundPipeline = VK_NULL_HANDLE;
     VkDescriptorSet boundTextureSet = VK_NULL_HANDLE;
     int32_t boundUniformBase = 0;
+    int32_t pushedUniformIndex = -1;
 };
 
 static const uint32_t kVertShaderCode[] = {
@@ -337,12 +394,16 @@ static bool loadFunctions(VkContext* vk)
     return true;
 }
 
-static bool findMemoryType(VkContext* vk, uint32_t typeBits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred, uint32_t* index)
+// Picks a memory type with all `required` flags, trying first for one that also has all `preferred` flags and
+// none of the `avoided` ones.
+static bool findMemoryType(VkContext* vk, uint32_t typeBits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred, uint32_t* index, VkMemoryPropertyFlags avoided = 0)
 {
     for (int pass = 0; pass < 2; pass++) {
         const VkMemoryPropertyFlags want = pass == 0 ? (required | preferred) : required;
+        const VkMemoryPropertyFlags reject = pass == 0 ? avoided : 0;
         for (uint32_t i = 0; i < vk->memProps.memoryTypeCount; i++) {
-            if ((typeBits & (1u << i)) && (vk->memProps.memoryTypes[i].propertyFlags & want) == want) {
+            const VkMemoryPropertyFlags flags = vk->memProps.memoryTypes[i].propertyFlags;
+            if ((typeBits & (1u << i)) && (flags & want) == want && (flags & reject) == 0) {
                 *index = i;
                 return true;
             }
@@ -386,6 +447,10 @@ static void destroyBufferNow(VkContext* vk, Buffer& buf)
 // Buffers and descriptor sets
 //
 
+// Creates a persistently mapped, host coherent buffer. Per-frame streams (vertices, indices, uniforms, staging) are
+// rewritten every frame and read once by the GPU, so they avoid device-local host-visible memory (ReBAR / the 256 MB
+// BAR window) on discrete GPUs: CPU writes into it cross PCIe and were measured to cost several times more than the
+// GPU's single read of system memory. Integrated GPUs only expose device-local memory and still get it.
 static bool createHostBuffer(VkContext* vk, VkDeviceSize size, VkBufferUsageFlags usage, Buffer* out)
 {
     const VkDevice dev = vk->info.device;
@@ -400,10 +465,9 @@ static bool createHostBuffer(VkContext* vk, VkDeviceSize size, VkBufferUsageFlag
     vk->vk.GetBufferMemoryRequirements(dev, buf.buffer, &req);
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.allocationSize = req.size;
-    // Coherent host memory; prefer device local (ReBAR / UMA) when available.
     const VkMemoryPropertyFlags required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    const VkMemoryPropertyFlags preferred = (usage & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) ? 0 : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    if (!findMemoryType(vk, req.memoryTypeBits, required, preferred, &mai.memoryTypeIndex) || !check(vk, vk->vk.AllocateMemory(dev, &mai, vk->info.allocator, &buf.memory), "vkAllocateMemory")) {
+    if (!findMemoryType(vk, req.memoryTypeBits, required, 0, &mai.memoryTypeIndex, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+        !check(vk, vk->vk.AllocateMemory(dev, &mai, vk->info.allocator, &buf.memory), "vkAllocateMemory")) {
         destroyBufferNow(vk, buf);
         return false;
     }
@@ -555,9 +619,12 @@ static bool recordTextureWrite(VkContext* vk, TextureVk& tex, int x, int y, int 
             offset = 0;
         }
         unsigned char* dst = static_cast<unsigned char*>(f.staging.mapped) + offset;
-        for (int row = 0; row < h; row++) {
-            const unsigned char* src = data + ((static_cast<VkDeviceSize>(y + row) * tex.width) + x) * comp;
-            std::memcpy(dst + row * rowBytes, src, rowBytes);
+        const unsigned char* src = data + ((static_cast<VkDeviceSize>(y) * tex.width) + x) * comp;
+        const VkDeviceSize srcStride = static_cast<VkDeviceSize>(tex.width) * comp;
+        if (srcStride == rowBytes) {
+            std::memcpy(dst, src, bytes);  // full-width rows are contiguous
+        } else {
+            for (int row = 0; row < h; row++) std::memcpy(dst + row * rowBytes, src + row * srcStride, rowBytes);
         }
         f.stagingUsed = offset + bytes;
 
@@ -601,26 +668,25 @@ static bool recordTextureWrite(VkContext* vk, TextureVk& tex, int x, int y, int 
 
 static TextureVk* findTexture(VkContext* vk, int id)
 {
-    for (TextureVk& t : vk->textures)
-        if (t.id == id && id != 0) return &t;
-    return nullptr;
+    if (id == 0) return nullptr;
+    auto it = vk->textureSlots.find(id);
+    return it != vk->textureSlots.end() ? &vk->textures[it->second] : nullptr;
 }
 
 static TextureVk* allocTexture(VkContext* vk)
 {
-    TextureVk* tex = nullptr;
-    for (TextureVk& t : vk->textures) {
-        if (t.id == 0) {
-            tex = &t;
+    size_t slot = vk->textures.size();
+    for (size_t i = 0; i < vk->textures.size(); i++) {
+        if (vk->textures[i].id == 0) {
+            slot = i;
             break;
         }
     }
-    if (tex == nullptr) {
-        vk->textures.emplace_back();
-        tex = &vk->textures.back();
-    }
+    if (slot == vk->textures.size()) vk->textures.emplace_back();
+    TextureVk* tex = &vk->textures[slot];
     *tex = TextureVk{};
     tex->id = ++vk->textureId;
+    vk->textureSlots[tex->id] = slot;
     return tex;
 }
 
@@ -675,6 +741,7 @@ static void retireTexture(VkContext* vk, TextureVk& tex)
         if (tex.image != VK_NULL_HANDLE) g.images.push_back(tex.image);
         if (tex.memory != VK_NULL_HANDLE) g.memory.push_back(tex.memory);
     }
+    if (tex.id != 0) vk->textureSlots.erase(tex.id);
     tex = TextureVk{};
 }
 
@@ -779,9 +846,9 @@ static int renderGetImageTextureId(void* uptr, int handle)
 // Pipelines
 //
 
-static uint64_t pipelineKey(VkPrimitiveTopology topology, StencilMode mode, const Blend& blend)
+static uint64_t pipelineKey(StencilMode mode, const Blend& blend)
 {
-    return static_cast<uint64_t>(topology) | (static_cast<uint64_t>(mode) << 4) | (static_cast<uint64_t>(blend.srcRGB) << 8) | (static_cast<uint64_t>(blend.dstRGB) << 16) |
+    return static_cast<uint64_t>(mode) | (static_cast<uint64_t>(blend.srcRGB) << 8) | (static_cast<uint64_t>(blend.dstRGB) << 16) |
            (static_cast<uint64_t>(blend.srcAlpha) << 24) | (static_cast<uint64_t>(blend.dstAlpha) << 32);
 }
 
@@ -798,7 +865,7 @@ static VkStencilOpState stencilOp(VkCompareOp compare, VkStencilOp pass, VkStenc
     return s;
 }
 
-static VkPipeline createPipeline(VkContext* vk, VkPrimitiveTopology topology, StencilMode mode, const Blend& blend)
+static VkPipeline createPipeline(VkContext* vk, StencilMode mode, const Blend& blend)
 {
     VkVertexInputBindingDescription binding{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attrs[2] = {
@@ -812,7 +879,7 @@ static VkPipeline createPipeline(VkContext* vk, VkPrimitiveTopology topology, St
     vi.pVertexAttributeDescriptions = attrs;
 
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ia.topology = topology;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vp.viewportCount = 1;
@@ -905,18 +972,20 @@ static VkPipeline createPipeline(VkContext* vk, VkPrimitiveTopology topology, St
     return pipeline;
 }
 
-static bool bindPipeline(VkContext* vk, VkCommandBuffer cmd, VkPrimitiveTopology topology, StencilMode mode, const Blend& blend)
+static VkPipeline getPipeline(VkContext* vk, StencilMode mode, const Blend& blend)
 {
-    const uint64_t key = pipelineKey(topology, mode, blend);
-    VkPipeline pipeline;
+    const uint64_t key = pipelineKey(mode, blend);
     auto it = vk->pipelines.find(key);
-    if (it != vk->pipelines.end()) {
-        pipeline = it->second;
-    } else {
-        pipeline = createPipeline(vk, topology, mode, blend);
-        if (pipeline == VK_NULL_HANDLE) return false;
-        vk->pipelines[key] = pipeline;
-    }
+    if (it != vk->pipelines.end()) return it->second;
+    VkPipeline pipeline = createPipeline(vk, mode, blend);
+    if (pipeline != VK_NULL_HANDLE) vk->pipelines.emplace(key, pipeline);
+    return pipeline;
+}
+
+static bool bindPipeline(VkContext* vk, VkCommandBuffer cmd, StencilMode mode, const Blend& blend)
+{
+    const VkPipeline pipeline = getPipeline(vk, mode, blend);
+    if (pipeline == VK_NULL_HANDLE) return false;
     if (pipeline != vk->boundPipeline) {
         vk->vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vk->boundPipeline = pipeline;
@@ -981,9 +1050,19 @@ static int renderCreate(void* uptr)
 
     vk->frames.resize(std::max(1u, vk->info.framesInFlight));
 
+    // Create the pipelines for the default (source-over) blend up front, so the first frames do not stall on
+    // pipeline compilation. Other composite operations are created on first use.
+    const Blend sourceOver{VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA};
+    for (StencilMode mode : {StencilNone, StencilFillShapes, StencilEqualZero, StencilFillCover, StencilStrokeBase, StencilStrokeClear}) {
+        if ((mode == StencilStrokeBase || mode == StencilStrokeClear) && !(vk->flags & CreateFlags::StencilStrokes)) continue;
+        if (getPipeline(vk, mode, sourceOver) == VK_NULL_HANDLE) return 0;
+    }
+
     // Some drivers dislike sampling unbound descriptors; draws without an image sample this one.
     vk->dummyTex = renderCreateTexture(vk, static_cast<int>(Texture::Alpha), 1, 1, 0, nullptr);
-    return vk->dummyTex != 0 ? 1 : 0;
+    if (vk->dummyTex == 0) return 0;
+    vk->dummySet = findTexture(vk, vk->dummyTex)->set;
+    return 1;
 }
 
 static void renderViewport(void* uptr, float width, float height, float devicePixelRatio)
@@ -997,9 +1076,10 @@ static void renderViewport(void* uptr, float width, float height, float devicePi
 static void resetCalls(VkContext* vk)
 {
     vk->calls.clear();
-    vk->paths.clear();
     vk->verts.clear();
+    vk->indices.clear();
     vk->uniforms.clear();
+    vk->simpleUniform = -1;
 }
 
 static void renderCancel(void* uptr)
@@ -1009,87 +1089,85 @@ static void renderCancel(void* uptr)
 
 static void setUniforms(VkContext* vk, VkCommandBuffer cmd, int uniformOffset, int image)
 {
-    PushConstants pc{};
-    pc.viewSize[0] = vk->view[0];
-    pc.viewSize[1] = vk->view[1];
-    pc.uniformIndex = vk->boundUniformBase + uniformOffset;
-    vk->vk.CmdPushConstants(cmd, vk->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-
-    TextureVk* tex = image != 0 ? findTexture(vk, image) : nullptr;
-    if (tex == nullptr) tex = findTexture(vk, vk->dummyTex);
-    if (tex != nullptr && tex->set != vk->boundTextureSet) {
-        vk->vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->pipelineLayout, 1, 1, &tex->set, 0, nullptr);
-        vk->boundTextureSet = tex->set;
+    // viewSize is pushed once per flush; only the uniform index changes between draws.
+    const int32_t index = vk->boundUniformBase + uniformOffset;
+    if (index != vk->pushedUniformIndex) {
+        vk->vk.CmdPushConstants(cmd, vk->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, offsetof(PushConstants, uniformIndex), sizeof(index), &index);
+        vk->pushedUniformIndex = index;
     }
+
+    VkDescriptorSet set = vk->dummySet;
+    if (image != 0) {
+        const TextureVk* tex = findTexture(vk, image);
+        if (tex != nullptr) set = tex->set;
+    }
+    if (set != vk->boundTextureSet) {
+        vk->vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->pipelineLayout, 1, 1, &set, 0, nullptr);
+        vk->boundTextureSet = set;
+    }
+}
+
+static void drawIndexed(VkContext* vk, VkCommandBuffer cmd, int first, int count)
+{
+    if (count > 0) vk->vk.CmdDrawIndexed(cmd, static_cast<uint32_t>(count), 1, static_cast<uint32_t>(first), 0, 0);
 }
 
 static void drawFill(VkContext* vk, VkCommandBuffer cmd, const Call& call)
 {
-    const DrawPath* paths = &vk->paths[call.pathOffset];
-    const Blend& blend = call.blend;
-
     // Draw shapes into the stencil buffer
-    if (!bindPipeline(vk, cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, StencilFillShapes, blend)) return;
-    setUniforms(vk, cmd, call.uniformOffset, 0);
-    for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].fillCount, 1, paths[i].fillOffset, 0);
+    if (!bindPipeline(vk, cmd, StencilFillShapes, call.blend)) return;
+    setUniforms(vk, cmd, vk->simpleUniform, 0);
+    drawIndexed(vk, cmd, call.first, call.count);
 
-    setUniforms(vk, cmd, call.uniformOffset + 1, call.image);
+    setUniforms(vk, cmd, call.uniformOffset, call.image);
     if (vk->flags & CreateFlags::Antialias) {
         // Draw anti-aliased fringes
-        if (!bindPipeline(vk, cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, StencilEqualZero, blend)) return;
-        for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].strokeCount, 1, paths[i].strokeOffset, 0);
+        if (!bindPipeline(vk, cmd, StencilEqualZero, call.blend)) return;
+        drawIndexed(vk, cmd, call.fringeFirst, call.fringeCount);
     }
 
     // Draw fill, clearing the stencil as we go
-    if (!bindPipeline(vk, cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, StencilFillCover, blend)) return;
-    vk->vk.CmdDraw(cmd, call.triangleCount, 1, call.triangleOffset, 0);
+    if (!bindPipeline(vk, cmd, StencilFillCover, call.blend)) return;
+    drawIndexed(vk, cmd, call.coverFirst, 6);
 }
 
 static void drawConvexFill(VkContext* vk, VkCommandBuffer cmd, const Call& call)
 {
-    const DrawPath* paths = &vk->paths[call.pathOffset];
-    if (!bindPipeline(vk, cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, StencilNone, call.blend)) return;
+    // Fill triangles and fringes share one pipeline, so they go out in a single draw.
+    if (!bindPipeline(vk, cmd, StencilNone, call.blend)) return;
     setUniforms(vk, cmd, call.uniformOffset, call.image);
-    for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].fillCount, 1, paths[i].fillOffset, 0);
-
-    // Draw fringes
-    if (!bindPipeline(vk, cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, StencilNone, call.blend)) return;
-    for (int i = 0; i < call.pathCount; i++)
-        if (paths[i].strokeCount > 0) vk->vk.CmdDraw(cmd, paths[i].strokeCount, 1, paths[i].strokeOffset, 0);
+    drawIndexed(vk, cmd, call.first, call.count);
 }
 
 static void drawStroke(VkContext* vk, VkCommandBuffer cmd, const Call& call)
 {
-    const DrawPath* paths = &vk->paths[call.pathOffset];
-    const VkPrimitiveTopology strip = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-
     if (vk->flags & CreateFlags::StencilStrokes) {
         // Fill the stroke base without overlap
-        if (!bindPipeline(vk, cmd, strip, StencilStrokeBase, call.blend)) return;
+        if (!bindPipeline(vk, cmd, StencilStrokeBase, call.blend)) return;
         setUniforms(vk, cmd, call.uniformOffset + 1, call.image);
-        for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].strokeCount, 1, paths[i].strokeOffset, 0);
+        drawIndexed(vk, cmd, call.first, call.count);
 
         // Draw anti-aliased pixels.
-        if (!bindPipeline(vk, cmd, strip, StencilEqualZero, call.blend)) return;
+        if (!bindPipeline(vk, cmd, StencilEqualZero, call.blend)) return;
         setUniforms(vk, cmd, call.uniformOffset, call.image);
-        for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].strokeCount, 1, paths[i].strokeOffset, 0);
+        drawIndexed(vk, cmd, call.first, call.count);
 
         // Clear stencil buffer.
-        if (!bindPipeline(vk, cmd, strip, StencilStrokeClear, call.blend)) return;
-        for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].strokeCount, 1, paths[i].strokeOffset, 0);
+        if (!bindPipeline(vk, cmd, StencilStrokeClear, call.blend)) return;
+        drawIndexed(vk, cmd, call.first, call.count);
     } else {
-        if (!bindPipeline(vk, cmd, strip, StencilNone, call.blend)) return;
+        if (!bindPipeline(vk, cmd, StencilNone, call.blend)) return;
         setUniforms(vk, cmd, call.uniformOffset, call.image);
-        for (int i = 0; i < call.pathCount; i++) vk->vk.CmdDraw(cmd, paths[i].strokeCount, 1, paths[i].strokeOffset, 0);
+        drawIndexed(vk, cmd, call.first, call.count);
     }
 }
 
 static void drawTriangles(VkContext* vk, VkCommandBuffer cmd, const Call& call)
 {
-    if (call.triangleCount == 0) return;
-    if (!bindPipeline(vk, cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, StencilNone, call.blend)) return;
+    if (call.count == 0) return;
+    if (!bindPipeline(vk, cmd, StencilNone, call.blend)) return;
     setUniforms(vk, cmd, call.uniformOffset, call.image);
-    vk->vk.CmdDraw(cmd, call.triangleCount, 1, call.triangleOffset, 0);
+    vk->vk.CmdDraw(cmd, static_cast<uint32_t>(call.count), 1, static_cast<uint32_t>(call.first), 0);
 }
 
 static void renderFlush(void* uptr)
@@ -1113,9 +1191,11 @@ static void renderFlush(void* uptr)
 
     // Append this flush's data to the slot's buffers; earlier flushes in the same frame keep their ranges.
     const VkDeviceSize vertBytes = vk->verts.size() * sizeof(Vertex);
+    const VkDeviceSize indexBytes = vk->indices.size() * sizeof(uint32_t);
     const VkDeviceSize uniBytes = vk->uniforms.size() * sizeof(FragUniforms);
     bool replaced = false;
-    if (!reserveFrameBuffer(vk, f.vertices, f.verticesUsed, vertBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &replaced)) {
+    if (!reserveFrameBuffer(vk, f.vertices, f.verticesUsed, vertBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &replaced) ||
+        (indexBytes > 0 && !reserveFrameBuffer(vk, f.indices, f.indicesUsed, indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &replaced))) {
         resetCalls(vk);
         return;
     }
@@ -1141,10 +1221,13 @@ static void renderFlush(void* uptr)
         vk->vk.UpdateDescriptorSets(vk->info.device, 1, &w, 0, nullptr);
     }
     const VkDeviceSize vertOffset = f.verticesUsed;
+    const VkDeviceSize indexOffset = f.indicesUsed;
     const VkDeviceSize uniOffset = f.uniformsUsed;
     std::memcpy(static_cast<unsigned char*>(f.vertices.mapped) + vertOffset, vk->verts.data(), vertBytes);
+    if (indexBytes > 0) std::memcpy(static_cast<unsigned char*>(f.indices.mapped) + indexOffset, vk->indices.data(), indexBytes);
     std::memcpy(static_cast<unsigned char*>(f.uniforms.mapped) + uniOffset, vk->uniforms.data(), uniBytes);
     f.verticesUsed += vertBytes;
+    f.indicesUsed += indexBytes;
     f.uniformsUsed += uniBytes;
 
     vk->boundPipeline = VK_NULL_HANDLE;
@@ -1159,9 +1242,19 @@ static void renderFlush(void* uptr)
     VkRect2D scissor{{0, 0}, {static_cast<uint32_t>(std::lround(viewport.width)), static_cast<uint32_t>(std::lround(viewport.height))}};
     vk->vk.CmdSetScissor(cmd, 0, 1, &scissor);
     vk->vk.CmdBindVertexBuffers(cmd, 0, 1, &f.vertices.buffer, &vertOffset);
+    // Indices are relative to this flush's first vertex, which the vertex buffer binding offset accounts for.
+    if (indexBytes > 0) vk->vk.CmdBindIndexBuffer(cmd, f.indices.buffer, indexOffset, VK_INDEX_TYPE_UINT32);
     vk->vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->pipelineLayout, 0, 1, &f.uniformSet, 0, nullptr);
 
-    for (const Call& call : vk->calls) {
+    PushConstants pc{};
+    pc.viewSize[0] = vk->view[0];
+    pc.viewSize[1] = vk->view[1];
+    pc.uniformIndex = vk->boundUniformBase;
+    vk->vk.CmdPushConstants(cmd, vk->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    vk->pushedUniformIndex = pc.uniformIndex;
+
+    for (size_t i = 0; i < vk->calls.size(); i++) {
+        const Call& call = vk->calls[i];
         switch (call.type) {
             case CallFill:
                 drawFill(vk, cmd, call);
@@ -1304,81 +1397,126 @@ static Blend blendCompositeOperation(CompositeOperationState op)
 static int allocUniforms(VkContext* vk, int n)
 {
     const int offset = static_cast<int>(vk->uniforms.size());
-    vk->uniforms.resize(vk->uniforms.size() + n);
+    vk->uniforms.grow(n);
     return offset;
 }
 
-static int allocVerts(VkContext* vk, int n)
+// Appends the vertices of a path's fill and/or stroke and returns the index of the first one.
+static uint32_t appendVerts(VkContext* vk, const Vertex* verts, int n)
 {
-    const int offset = static_cast<int>(vk->verts.size());
-    vk->verts.resize(vk->verts.size() + n);
-    return offset;
+    const uint32_t first = static_cast<uint32_t>(vk->verts.size());
+    if (n > 0) std::memcpy(vk->verts.grow(n), verts, sizeof(Vertex) * n);
+    return first;
+}
+
+// Triangle fan over verts [base, base + n) as a list, with the winding of the original (0, j+1, j+2) triangles.
+static void appendFanIndices(VkContext* vk, uint32_t base, int n)
+{
+    if (n < 3) return;
+    uint32_t* out = vk->indices.grow(static_cast<size_t>(n - 2) * 3);
+    for (uint32_t j = 0; j < static_cast<uint32_t>(n - 2); j++) {
+        *out++ = base;
+        *out++ = base + j + 1;
+        *out++ = base + j + 2;
+    }
+}
+
+// Triangle strip over verts [base, base + n) as a list. Triangle i uses (i, i + 1 + i%2, i + 2 - i%2), exactly the
+// vertices and winding the Vulkan spec defines for strips, so culling and rasterization are unchanged.
+static void appendStripIndices(VkContext* vk, uint32_t base, int n)
+{
+    if (n < 3) return;
+    uint32_t* out = vk->indices.grow(static_cast<size_t>(n - 2) * 3);
+    for (uint32_t i = 0; i < static_cast<uint32_t>(n - 2); i++) {
+        const uint32_t odd = i & 1u;
+        *out++ = base + i;
+        *out++ = base + i + 1 + odd;
+        *out++ = base + i + 2 - odd;
+    }
+}
+
+// Adds `call`, whose `nuniforms` uniforms are the last ones allocated. A call that draws exactly like the previous one
+// (same kind, image, blend and uniforms; no stencil interplay; adjacent ranges) is folded into it instead, so runs of
+// same-styled text, convex shapes or non-stencil strokes become a single draw.
+static void pushCall(VkContext* vk, const Call& call, int nuniforms)
+{
+    const bool mergeable = call.type == CallConvexFill || call.type == CallTriangles || (call.type == CallStroke && !(vk->flags & CreateFlags::StencilStrokes));
+    if (mergeable && !vk->calls.empty()) {
+        Call& last = vk->calls.back();
+        if (last.type == call.type && last.image == call.image && last.blend == call.blend && last.first + last.count == call.first &&
+            std::memcmp(&vk->uniforms[last.uniformOffset], &vk->uniforms[call.uniformOffset], sizeof(FragUniforms) * nuniforms) == 0) {
+            last.count += call.count;
+            vk->uniforms.shrink(nuniforms);
+            return;
+        }
+    }
+    *vk->calls.grow(1) = call;
 }
 
 static void renderFill(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const float* bounds, const Path* paths, int npaths)
 {
     VkContext* vk = static_cast<VkContext*>(uptr);
     Call call{};
-    call.type = CallFill;
-    call.triangleCount = 4;
-    call.pathOffset = static_cast<int>(vk->paths.size());
-    call.pathCount = npaths;
+    call.type = (npaths == 1 && paths[0].convex) ? CallConvexFill : CallFill;
     call.image = paint->image;
     call.blend = blendCompositeOperation(compositeOperation);
-    if (npaths == 1 && paths[0].convex) {
-        call.type = CallConvexFill;
-        call.triangleCount = 0;  // Bounding box fill quad not needed for convex fill
+
+    // Vertices are stored once per path (fill fan, then fringe strip); the primitives are expressed as indices.
+    const uint32_t base = static_cast<uint32_t>(vk->verts.size());
+    for (int i = 0; i < npaths; i++) {
+        appendVerts(vk, paths[i].fill, paths[i].nfill);
+        appendVerts(vk, paths[i].stroke, paths[i].nstroke);
     }
 
-    // Fans are expanded into triangle lists: TRIANGLE_FAN is optional on some Vulkan implementations.
-    int maxverts = call.triangleCount;
-    for (int i = 0; i < npaths; i++) maxverts += std::max(0, paths[i].nfill - 2) * 3 + paths[i].nstroke;
-    int offset = allocVerts(vk, maxverts);
-
+    // Fill triangles of all paths
+    call.first = static_cast<int>(vk->indices.size());
+    uint32_t v = base;
     for (int i = 0; i < npaths; i++) {
-        DrawPath copy{};
-        const Path* path = &paths[i];
-        if (path->nfill > 2) {
-            copy.fillOffset = offset;
-            copy.fillCount = (path->nfill - 2) * 3;
-            for (int j = 0; j < path->nfill - 2; j++) {
-                vk->verts[offset++] = path->fill[0];
-                vk->verts[offset++] = path->fill[j + 1];
-                vk->verts[offset++] = path->fill[j + 2];
-            }
-        }
-        if (path->nstroke > 0) {
-            copy.strokeOffset = offset;
-            copy.strokeCount = path->nstroke;
-            std::memcpy(&vk->verts[offset], path->stroke, sizeof(Vertex) * path->nstroke);
-            offset += path->nstroke;
-        }
-        vk->paths.push_back(copy);
+        appendFanIndices(vk, v, paths[i].nfill);
+        v += static_cast<uint32_t>(paths[i].nfill + paths[i].nstroke);
+    }
+    // Anti-aliased fringes of all paths. Convex fills draw them in the same pass, right after the fill.
+    const int fringeFirst = static_cast<int>(vk->indices.size());
+    v = base;
+    for (int i = 0; i < npaths; i++) {
+        v += static_cast<uint32_t>(paths[i].nfill);
+        appendStripIndices(vk, v, paths[i].nstroke);
+        v += static_cast<uint32_t>(paths[i].nstroke);
     }
 
     bool ok;
     if (call.type == CallFill) {
-        // Quad
-        call.triangleOffset = offset;
-        Vertex* quad = &vk->verts[call.triangleOffset];
-        quad[0] = Vertex{bounds[2], bounds[3], 0.5f, 1.0f, 0.0f, 0.0f};
-        quad[1] = Vertex{bounds[2], bounds[1], 0.5f, 1.0f, 0.0f, 0.0f};
-        quad[2] = Vertex{bounds[0], bounds[3], 0.5f, 1.0f, 0.0f, 0.0f};
-        quad[3] = Vertex{bounds[0], bounds[1], 0.5f, 1.0f, 0.0f, 0.0f};
+        call.count = fringeFirst - call.first;
+        call.fringeFirst = fringeFirst;
+        call.fringeCount = static_cast<int>(vk->indices.size()) - fringeFirst;
 
-        call.uniformOffset = allocUniforms(vk, 2);
-        // Simple shader for stencil
-        FragUniforms& simple = vk->uniforms[call.uniformOffset];
-        simple = FragUniforms{};
-        simple.strokeThr = -1.0f;
-        simple.type = ShaderSimple;
+        // Bounding box quad
+        const Vertex quad[4] = {
+            {bounds[2], bounds[3], 0.5f, 1.0f, 0.0f, 0.0f},
+            {bounds[2], bounds[1], 0.5f, 1.0f, 0.0f, 0.0f},
+            {bounds[0], bounds[3], 0.5f, 1.0f, 0.0f, 0.0f},
+            {bounds[0], bounds[1], 0.5f, 1.0f, 0.0f, 0.0f},
+        };
+        call.coverFirst = static_cast<int>(vk->indices.size());
+        appendStripIndices(vk, appendVerts(vk, quad, 4), 4);
+
+        if (vk->simpleUniform < 0) {
+            // Simple shader for stencil; identical for every fill, so one per flush.
+            vk->simpleUniform = allocUniforms(vk, 1);
+            FragUniforms& simple = vk->uniforms[vk->simpleUniform];
+            simple = FragUniforms{};
+            simple.strokeThr = -1.0f;
+            simple.type = ShaderSimple;
+        }
         // Fill shader
-        ok = convertPaint(vk, &vk->uniforms[call.uniformOffset + 1], paint, scissor, fringe, fringe, -1.0f, 0);
+        call.uniformOffset = allocUniforms(vk, 1);
+        ok = convertPaint(vk, &vk->uniforms[call.uniformOffset], paint, scissor, fringe, fringe, -1.0f, 0);
     } else {
+        call.count = static_cast<int>(vk->indices.size()) - call.first;
         call.uniformOffset = allocUniforms(vk, 1);
         ok = convertPaint(vk, &vk->uniforms[call.uniformOffset], paint, scissor, fringe, fringe, -1.0f, 0);
     }
-    if (ok) vk->calls.push_back(call);
+    if (ok) pushCall(vk, call, 1);
 }
 
 static void renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
@@ -1386,36 +1524,26 @@ static void renderStroke(void* uptr, Paint* paint, CompositeOperationState compo
     VkContext* vk = static_cast<VkContext*>(uptr);
     Call call{};
     call.type = CallStroke;
-    call.pathOffset = static_cast<int>(vk->paths.size());
-    call.pathCount = npaths;
     call.image = paint->image;
     call.blend = blendCompositeOperation(compositeOperation);
 
-    int maxverts = 0;
-    for (int i = 0; i < npaths; i++) maxverts += paths[i].nstroke;
-    int offset = allocVerts(vk, maxverts);
-    for (int i = 0; i < npaths; i++) {
-        DrawPath copy{};
-        const Path* path = &paths[i];
-        if (path->nstroke > 0) {
-            copy.strokeOffset = offset;
-            copy.strokeCount = path->nstroke;
-            std::memcpy(&vk->verts[offset], path->stroke, sizeof(Vertex) * path->nstroke);
-            offset += path->nstroke;
-        }
-        vk->paths.push_back(copy);
-    }
+    call.first = static_cast<int>(vk->indices.size());
+    for (int i = 0; i < npaths; i++) appendStripIndices(vk, appendVerts(vk, paths[i].stroke, paths[i].nstroke), paths[i].nstroke);
+    call.count = static_cast<int>(vk->indices.size()) - call.first;
 
     bool ok;
+    int nuniforms;
     if (vk->flags & CreateFlags::StencilStrokes) {
+        nuniforms = 2;
         call.uniformOffset = allocUniforms(vk, 2);
         ok = convertPaint(vk, &vk->uniforms[call.uniformOffset], paint, scissor, strokeWidth, fringe, -1.0f, lineStyle) &&
              convertPaint(vk, &vk->uniforms[call.uniformOffset + 1], paint, scissor, strokeWidth, fringe, 1.0f - 0.5f / 255.0f, lineStyle);
     } else {
+        nuniforms = 1;
         call.uniformOffset = allocUniforms(vk, 1);
         ok = convertPaint(vk, &vk->uniforms[call.uniformOffset], paint, scissor, strokeWidth, fringe, -1.0f, lineStyle);
     }
-    if (ok) vk->calls.push_back(call);
+    if (ok) pushCall(vk, call, nuniforms);
 }
 
 static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
@@ -1425,15 +1553,14 @@ static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState co
     call.type = CallTriangles;
     call.image = paint->image;
     call.blend = blendCompositeOperation(compositeOperation);
-    call.triangleOffset = allocVerts(vk, nverts);
-    call.triangleCount = nverts;
-    std::memcpy(&vk->verts[call.triangleOffset], verts, sizeof(Vertex) * nverts);
+    call.first = static_cast<int>(appendVerts(vk, verts, nverts));
+    call.count = nverts;
 
     call.uniformOffset = allocUniforms(vk, 1);
     FragUniforms* frag = &vk->uniforms[call.uniformOffset];
     if (!convertPaint(vk, frag, paint, scissor, 1.0f, fringe, -1.0f, 0)) return;
     frag->type = ShaderImg;
-    vk->calls.push_back(call);
+    pushCall(vk, call, 1);
 }
 
 static void renderDelete(void* uptr)
@@ -1452,6 +1579,7 @@ static void renderDelete(void* uptr)
         for (FrameData& f : vk->frames) {
             releaseGarbage(vk, f.garbage);
             destroyBufferNow(vk, f.vertices);
+            destroyBufferNow(vk, f.indices);
             destroyBufferNow(vk, f.uniforms);
             destroyBufferNow(vk, f.staging);
             if (f.uploadFence != VK_NULL_HANDLE) vk->vk.DestroyFence(dev, f.uploadFence, alloc);
@@ -1523,6 +1651,7 @@ static void beginFrame(VkContext* vk, VkCommandBuffer commandBuffer, uint32_t fr
     releaseGarbage(vk, f.garbage);
     f.cmd = commandBuffer;
     f.verticesUsed = 0;
+    f.indicesUsed = 0;
     f.uniformsUsed = 0;
     f.stagingUsed = 0;
 }
