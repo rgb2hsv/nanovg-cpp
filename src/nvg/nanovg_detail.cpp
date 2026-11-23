@@ -10,104 +10,6 @@ namespace nvg
 namespace detail
 {
 
-float modf(float a, float b)
-{
-    return ::fmodf(a, b);
-}
-float sinf(float a)
-{
-    return ::sinf(a);
-}
-float cosf(float a)
-{
-    return ::cosf(a);
-}
-float tanf(float a)
-{
-    return ::tanf(a);
-}
-float atan2f(float a, float b)
-{
-    return ::atan2f(a, b);
-}
-float acosf(float a)
-{
-    return ::acosf(a);
-}
-int mini(int a, int b)
-{
-    return a < b ? a : b;
-}
-int maxi(int a, int b)
-{
-    return a > b ? a : b;
-}
-int clampi(int a, int mn, int mx)
-{
-    return a < mn ? mn : (a > mx ? mx : a);
-}
-float minf(float a, float b)
-{
-    return a < b ? a : b;
-}
-float maxf(float a, float b)
-{
-    return a > b ? a : b;
-}
-float absf(float a)
-{
-    return a >= 0.0f ? a : -a;
-}
-float signf(float a)
-{
-    return a >= 0.0f ? 1.0f : -1.0f;
-}
-float clampf(float a, float mn, float mx)
-{
-    return a < mn ? mn : (a > mx ? mx : a);
-}
-float cross(float dx0, float dy0, float dx1, float dy1)
-{
-    return dx1 * dy0 - dx0 * dy1;
-}
-
-float rsqrtf(float x)
-{
-    float xhalf = 0.5f * x;
-    uint32_t i = std::bit_cast<uint32_t>(x);
-    i = 0x5f3759df - (i >> 1);
-    float y = std::bit_cast<float>(i);
-    y = y * (1.5f - (xhalf * y * y));
-    return y;
-}
-
-float sqrtf(float a)
-{
-#if defined(NANOVG_FAST_SQRT)
-    return 1.0f / std::max(std::numeric_limits<float>::epsilon(), rsqrtf(a));
-#else
-    return std::sqrt(a);
-#endif
-}
-
-float normalize(float& x, float& y)
-{
-#if defined(NANOVG_FAST_SQRT)
-    float id = rsqrtf(x * x + y * y);
-    x *= id;
-    y *= id;
-    return 1.0f / std::max(std::numeric_limits<float>::epsilon(), id);
-#else
-    float d = sqrtf(x * x + y * y);
-    if (d > std::numeric_limits<float>::epsilon()) {
-        d = 1.0f / d;
-        x *= d;
-        y *= d;
-    }
-    return d;
-#endif
-}
-
 std::shared_ptr<PathCache> allocPathCache()
 {
     auto c = std::make_shared<PathCache>();
@@ -206,13 +108,6 @@ void isectRects(float* dst, float ax, float ay, float aw, float ah, float bx, fl
     dst[3] = maxf(0.0f, maxy - miny);
 }
 
-int ptEquals(float x1, float y1, float x2, float y2, float tol)
-{
-    float dx = x2 - x1;
-    float dy = y2 - y1;
-    return dx * dx + dy * dy < tol * tol;
-}
-
 float distPtSeg(float x, float y, float px, float py, float qx, float qy)
 {
     float pqx, pqy, dx, dy, d, t;
@@ -239,15 +134,6 @@ float getAverageScale(const float* t)
     return (sx + sy) * 0.5f;
 }
 
-float triarea2(float ax, float ay, float bx, float by, float cx, float cy)
-{
-    float abx = bx - ax;
-    float aby = by - ay;
-    float acx = cx - ax;
-    float acy = cy - ay;
-    return acx * aby - abx * acy;
-}
-
 float polyArea(Point* pts, int npts)
 {
     int i;
@@ -272,11 +158,6 @@ void polyReverse(Point* pts, int npts)
         i++;
         j--;
     }
-}
-
-void pushVertex(std::vector<Vertex>& vs, float x, float y, float u, float v, float s, float t)
-{
-    vs.push_back(Vertex{x, y, u, v, s, t});
 }
 
 int curveDivs(float r, float arc, float tol)
@@ -495,11 +376,6 @@ void roundCapEnd(std::vector<Vertex>& out, Point* p, float dx, float dy, float w
         pushVertex(out, px, py, 0.5f, 1, 0, t);
         pushVertex(out, px - dlx * ax + dx * ay, py - dly * ax + dy * ay, u0, 1, ax / w, t + dir * ay / w);
     }
-}
-
-float quantize(float a, float d)
-{
-    return (static_cast<int>(a / d + 0.5f)) * d;
 }
 
 float getFontScale(const State* state)
