@@ -1615,6 +1615,18 @@ static void glnvg__renderTriangles(void* uptr, Paint* paint, CompositeOperationS
     glnvg__convertPaint(gl, frag, paint, scissor, 1.0f, fringe, -1.0f, 0);
     frag->type = NSVG_SHADER_IMG;
 
+    // Fold into the previous call when it draws exactly the same way (e.g. consecutive runs of same-styled text):
+    // same image, blend and uniforms, with its vertices directly before ours. This call's uniforms are the last ones.
+    if (gl->ncalls >= 2) {
+        GlCall* prev = &gl->calls[gl->ncalls - 2];
+        if (prev->type == Triangles && prev->image == call->image && std::memcmp(&prev->blendFunc, &call->blendFunc, sizeof(GlBlend)) == 0 &&
+            prev->triangleOffset + prev->triangleCount == call->triangleOffset &&
+            std::memcmp(nvg::detail::fragUniformPtr(gl, prev->uniformOffset), frag, sizeof(GlFragUniforms)) == 0) {
+            prev->triangleCount += call->triangleCount;
+            gl->ncalls--;
+            gl->nuniforms--;
+        }
+    }
     return;
 
 error:
