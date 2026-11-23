@@ -1,14 +1,15 @@
 //
-// C API wrapper for nvg::Context (see nanovg.hpp). Implements declarations in nvg/legacy/nanovg.h.
+// Stable C API for nvg::Context (see nanovg.hpp). Implements the declarations in stable/nanovg.h.
 //
 
-#include "legacy/nanovg.h"
+#include "stable/nanovg.h"
 
 #include "nanovg.hpp"
 
 #include <cstring>
 #include <memory>
 #include <new>
+#include <stdexcept>
 
 struct NVGcontext : nvg::Context {
     explicit NVGcontext(const nvg::Params& params) : nvg::Context(params)
@@ -42,27 +43,59 @@ nvg::Paint toCpp(NVGpaint p) noexcept
     return r;
 }
 
-NVGcolor toLegacy(const nvg::Color& c) noexcept
+NVGcolor toC(const nvg::Color& c) noexcept
 {
     NVGcolor r;
     std::memcpy(&r, &c, sizeof(r));
     return r;
 }
 
-NVGpaint toLegacy(const nvg::Paint& p) noexcept
+NVGpaint toC(const nvg::Paint& p) noexcept
 {
     NVGpaint r;
     std::memcpy(&r, &p, sizeof(r));
     return r;
 }
 
-struct NVGscissorBounds toLegacy(const nvg::ScissorBounds& b) noexcept
+struct NVGscissorBounds toC(const nvg::ScissorBounds& b) noexcept
 {
     NVGscissorBounds r;
     std::memcpy(&r, &b, sizeof(r));
     return r;
 }
 
+}  // namespace
+
+namespace
+{
+nvg::Rect toCpp(NVGrect r) noexcept
+{
+    return nvg::Rect{r.x, r.y, r.w, r.h};
+}
+
+nvg::PaintStyle toPaintStyle(int style) noexcept
+{
+    switch (style) {
+        case NVG_PAINT_STROKE:
+            return nvg::PaintStyle::Stroke;
+        case NVG_PAINT_FILL_AND_STROKE:
+            return nvg::PaintStyle::FillAndStroke;
+        default:
+            return nvg::PaintStyle::Fill;
+    }
+}
+
+nvg::PointMode toPointMode(int mode) noexcept
+{
+    switch (mode) {
+        case NVG_POINTS_LINES:
+            return nvg::PointMode::Lines;
+        case NVG_POINTS_POLYGON:
+            return nvg::PointMode::Polygon;
+        default:
+            return nvg::PointMode::Points;
+    }
+}
 }  // namespace
 
 extern "C" {
@@ -99,47 +132,47 @@ void nvgGlobalCompositeBlendFuncSeparate(NVGcontext* ctx, int srcRGB, int dstRGB
 
 NVGcolor nvgRGB(unsigned char r, unsigned char g, unsigned char b)
 {
-    return toLegacy(nvg::rgb(r, g, b));
+    return toC(nvg::rgb(r, g, b));
 }
 
 NVGcolor nvgRGBf(float r, float g, float b)
 {
-    return toLegacy(nvg::rgbf(r, g, b));
+    return toC(nvg::rgbf(r, g, b));
 }
 
 NVGcolor nvgRGBA(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 {
-    return toLegacy(nvg::rgba(r, g, b, a));
+    return toC(nvg::rgba(r, g, b, a));
 }
 
 NVGcolor nvgRGBAf(float r, float g, float b, float a)
 {
-    return toLegacy(nvg::rgbaf(r, g, b, a));
+    return toC(nvg::rgbaf(r, g, b, a));
 }
 
 NVGcolor nvgLerpRGBA(NVGcolor c0, NVGcolor c1, float u)
 {
-    return toLegacy(nvg::lerpRgba(toCpp(c0), toCpp(c1), u));
+    return toC(nvg::lerpRgba(toCpp(c0), toCpp(c1), u));
 }
 
 NVGcolor nvgTransRGBA(NVGcolor c0, unsigned char a)
 {
-    return toLegacy(nvg::transRgba(toCpp(c0), a));
+    return toC(nvg::transRgba(toCpp(c0), a));
 }
 
 NVGcolor nvgTransRGBAf(NVGcolor c0, float a)
 {
-    return toLegacy(nvg::transRgbaf(toCpp(c0), a));
+    return toC(nvg::transRgbaf(toCpp(c0), a));
 }
 
 NVGcolor nvgHSL(float h, float s, float l)
 {
-    return toLegacy(nvg::hsl(h, s, l));
+    return toC(nvg::hsl(h, s, l));
 }
 
 NVGcolor nvgHSLA(float h, float s, float l, unsigned char a)
 {
-    return toLegacy(nvg::hsla(h, s, l, a));
+    return toC(nvg::hsla(h, s, l, a));
 }
 
 void nvgSave(NVGcontext* ctx)
@@ -159,7 +192,7 @@ void nvgReset(NVGcontext* ctx)
 
 NVGscissorBounds nvgCurrentScissor(NVGcontext* ctx)
 {
-    return toLegacy(ctx->currentScissor());
+    return toC(ctx->currentScissor());
 }
 
 void nvgShapeAntiAlias(NVGcontext* ctx, int enabled)
@@ -352,22 +385,22 @@ void nvgDeleteImage(NVGcontext* ctx, int image)
 
 NVGpaint nvgLinearGradient(NVGcontext* ctx, float sx, float sy, float ex, float ey, NVGcolor icol, NVGcolor ocol)
 {
-    return toLegacy(ctx->linearGradient(sx, sy, ex, ey, toCpp(icol), toCpp(ocol)));
+    return toC(ctx->linearGradient(sx, sy, ex, ey, toCpp(icol), toCpp(ocol)));
 }
 
 NVGpaint nvgBoxGradient(NVGcontext* ctx, float x, float y, float w, float h, float r, float f, NVGcolor icol, NVGcolor ocol)
 {
-    return toLegacy(ctx->boxGradient(x, y, w, h, r, f, toCpp(icol), toCpp(ocol)));
+    return toC(ctx->boxGradient(x, y, w, h, r, f, toCpp(icol), toCpp(ocol)));
 }
 
 NVGpaint nvgRadialGradient(NVGcontext* ctx, float cx, float cy, float inr, float outr, NVGcolor icol, NVGcolor ocol)
 {
-    return toLegacy(ctx->radialGradient(cx, cy, inr, outr, toCpp(icol), toCpp(ocol)));
+    return toC(ctx->radialGradient(cx, cy, inr, outr, toCpp(icol), toCpp(ocol)));
 }
 
 NVGpaint nvgImagePattern(NVGcontext* ctx, float ox, float oy, float ex, float ey, float angle, int image, float alpha)
 {
-    return toLegacy(ctx->imagePattern(ox, oy, ex, ey, angle, image, alpha));
+    return toC(ctx->imagePattern(ox, oy, ex, ey, angle, image, alpha));
 }
 
 void nvgScissor(NVGcontext* ctx, float x, float y, float w, float h)
@@ -605,6 +638,107 @@ int nvgTextBreakLines(NVGcontext* ctx, const char* string, const char* end, floa
     return ctx->textBreakLines(string, end, breakRowWidth, reinterpret_cast<nvg::TextRow*>(rows), maxRows, skipSpaces);
 }
 
+
+static_assert(sizeof(NVGrect) == sizeof(nvg::Rect));
+static_assert(sizeof(NVGvertex) == sizeof(nvg::Vertex));
+static_assert(static_cast<int>(NVG_PAINT_FILL) == static_cast<int>(nvg::PaintStyle::Fill) && static_cast<int>(NVG_PAINT_FILL_AND_STROKE) == static_cast<int>(nvg::PaintStyle::FillAndStroke));
+static_assert(static_cast<int>(NVG_POINTS_POLYGON) == static_cast<int>(nvg::PointMode::Polygon));
+static_assert(static_cast<int>(NVG_ANTIALIAS) == static_cast<int>(nvg::CreateFlags::Antialias) && static_cast<int>(NVG_STENCIL_STROKES) == static_cast<int>(nvg::CreateFlags::StencilStrokes) &&
+              static_cast<int>(NVG_DEBUG) == static_cast<int>(nvg::CreateFlags::Debug));
+
+void nvgDrawPaint(NVGcontext* ctx, NVGpaint paint)
+{
+    ctx->drawPaint(toCpp(paint));
+}
+
+void nvgDrawColor(NVGcontext* ctx, NVGcolor color)
+{
+    ctx->drawColor(toCpp(color));
+}
+
+void nvgClear(NVGcontext* ctx, NVGcolor color)
+{
+    ctx->clear(toCpp(color));
+}
+
+void nvgDrawLine(NVGcontext* ctx, float x0, float y0, float x1, float y1)
+{
+    ctx->drawLine(x0, y0, x1, y1);
+}
+
+void nvgDrawPoints(NVGcontext* ctx, int mode, const float* pts, int count)
+{
+    ctx->drawPoints(toPointMode(mode), pts, count);
+}
+
+void nvgDrawPoint(NVGcontext* ctx, float x, float y)
+{
+    ctx->drawPoint(x, y);
+}
+
+void nvgDrawPolygon(NVGcontext* ctx, const float* pts, int count, int style)
+{
+    ctx->drawPolygon(pts, count, toPaintStyle(style));
+}
+
+void nvgDrawRect(NVGcontext* ctx, NVGrect r, int style)
+{
+    ctx->drawRect(toCpp(r), toPaintStyle(style));
+}
+
+void nvgDrawRoundRect(NVGcontext* ctx, NVGrect r, float radius, int style)
+{
+    ctx->drawRoundRect(toCpp(r), radius, toPaintStyle(style));
+}
+
+void nvgDrawRoundRectVarying(NVGcontext* ctx, NVGrect r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, int style)
+{
+    ctx->drawRoundRectVarying(toCpp(r), radTopLeft, radTopRight, radBottomRight, radBottomLeft, toPaintStyle(style));
+}
+
+void nvgDrawDRRect(NVGcontext* ctx, NVGrect outer, float outerRadius, NVGrect inner, float innerRadius)
+{
+    ctx->drawDRRect(toCpp(outer), outerRadius, toCpp(inner), innerRadius);
+}
+
+void nvgDrawCircle(NVGcontext* ctx, float cx, float cy, float r, int style)
+{
+    ctx->drawCircle(cx, cy, r, toPaintStyle(style));
+}
+
+void nvgDrawOval(NVGcontext* ctx, NVGrect oval, int style)
+{
+    ctx->drawOval(toCpp(oval), toPaintStyle(style));
+}
+
+void nvgDrawArc(NVGcontext* ctx, float cx, float cy, float r, float startAngle, float sweepAngle, int useCenter, int style)
+{
+    ctx->drawArc(cx, cy, r, startAngle, sweepAngle, useCenter != 0, toPaintStyle(style));
+}
+
+void nvgDrawImage(NVGcontext* ctx, int image, float x, float y, float alpha)
+{
+    ctx->drawImage(image, x, y, alpha);
+}
+
+void nvgDrawImageRect(NVGcontext* ctx, int image, const NVGrect* src, NVGrect dst, float alpha)
+{
+    if (src != nullptr)
+        ctx->drawImageRect(image, toCpp(*src), toCpp(dst), alpha);
+    else
+        ctx->drawImageRect(image, toCpp(dst), alpha);
+}
+
+void nvgDrawImageNine(NVGcontext* ctx, int image, NVGrect center, NVGrect dst, float alpha)
+{
+    ctx->drawImageNine(image, toCpp(center), toCpp(dst), alpha);
+}
+
+void nvgDrawVertices(NVGcontext* ctx, const NVGvertex* verts, int nverts, int image, float alpha)
+{
+    ctx->drawVertices(reinterpret_cast<const nvg::Vertex*>(verts), nverts, image, alpha);
+}
+
 int nvgGetImageTextureId(NVGcontext* ctx, int handle)
 {
     const nvg::Params& p = ctx->internalParams();
@@ -615,8 +749,12 @@ int nvgGetImageTextureId(NVGcontext* ctx, int handle)
 NVGcontext* nvgCreateInternal(NVGparams* params)
 {
     if (!params) return nullptr;
-
-    return new NVGcontext(copyParams(*params));
+    // C callers cannot catch exceptions; report construction failure (e.g. renderCreate returning 0) as NULL.
+    try {
+        return new NVGcontext(copyParams(*params));
+    } catch (const std::exception&) {
+        return nullptr;
+    }
 }
 
 void nvgDeleteInternal(NVGcontext* ctx)

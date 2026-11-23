@@ -17,11 +17,11 @@
 //
 
 #include <stdio.h>
-#define GLFW_INCLUDE_ES2
+#define GLFW_INCLUDE_ES3
 #define GLFW_INCLUDE_GLEXT
 #include <GLFW/glfw3.h>
 #include "nanovg.h"
-#define NANOVG_GLES2_IMPLEMENTATION
+#define NANOVG_GLES3_IMPLEMENTATION
 #include "nanovg_gl.h"
 #include "nanovg_gl_utils.h"
 #include "demo.h"
@@ -64,11 +64,11 @@ int main()
     glfwSetErrorCallback(errorcb);
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
-    window = glfwCreateWindow(1000, 600, "NanoVG", NULL, NULL);
-    //	window = glfwCreateWindow(1000, 600, "NanoVG", glfwGetPrimaryMonitor(), NULL);
+    window = glfwCreateWindow(1200, 1000, "NanoVG", NULL, NULL);
+    //	window = glfwCreateWindow(1200, 1000, "NanoVG", glfwGetPrimaryMonitor(), NULL);
     if (!window) {
         glfwTerminate();
         return -1;
@@ -78,7 +78,7 @@ int main()
 
     glfwMakeContextCurrent(window);
 
-    vg = nvgCreateGLES2(NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_DEBUG);
+    vg = nvgCreateGLES3(NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_DEBUG);
     if (vg == NULL) {
         printf("Could not init nanovg.\n");
         return -1;
@@ -128,12 +128,12 @@ int main()
 
         nvgEndFrame(vg);
 
+        glEnable(GL_DEPTH_TEST);
+
         if (screenshot) {
             screenshot = 0;
-            saveScreenShot(fbWidth, fbHeight, premult, "dump.png");
+            saveScreenShot(fbWidth, fbHeight, premult, "dump.png", 0);
         }
-
-        glEnable(GL_DEPTH_TEST);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -141,7 +141,7 @@ int main()
 
     freeDemoData(vg, &data);
 
-    nvgDeleteGLES2(vg);
+    nvgDeleteGLES3(vg);
 
     glfwTerminate();
     return 0;

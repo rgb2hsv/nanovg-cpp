@@ -20,26 +20,7 @@
 #include <array>
 #include <memory>
 
-namespace nvg
-{
-
-enum class CreateFlags : int {
-    Antialias = 1 << 0,
-    StencilStrokes = 1 << 1,
-    Debug = 1 << 2,
-};
-
-inline constexpr CreateFlags operator|(CreateFlags a, CreateFlags b) noexcept
-{
-    return static_cast<CreateFlags>(to_underlying(a) | to_underlying(b));
-}
-
-inline constexpr int operator&(int a, CreateFlags b) noexcept
-{
-    return a & to_underlying(b);
-}
-
-}  // namespace nvg
+// nvg::CreateFlags (Antialias, StencilStrokes, Debug) is declared in nanovg.hpp and shared with the Vulkan backend.
 
 #if defined NANOVG_GL2_IMPLEMENTATION
 #define NANOVG_GL2 1

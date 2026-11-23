@@ -16,4 +16,7 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
 // renderDemo() calls this for the bottom part of the window.
 void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float height, float t, DemoData& data);
 
+// Reads back the current GL framebuffer (GL examples only).
 bool saveScreenShot(int w, int h, int premult, const std::string& name, bool compare = false);
+// Saves top-down RGBA8 pixels (modified in place); with compare, diffs against an existing file of the same name.
+bool saveScreenShotRGBA(int w, int h, int premult, unsigned char* image, const std::string& name, bool compare = false);

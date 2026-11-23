@@ -17,14 +17,13 @@
 //
 
 #include <stdio.h>
-#ifdef NANOVG_GLEW
-#include <GL/glew.h>
-#endif
+#define GLFW_INCLUDE_ES2
 #define GLFW_INCLUDE_GLEXT
 #include <GLFW/glfw3.h>
 #include "nanovg.h"
-#define NANOVG_GL2_IMPLEMENTATION
+#define NANOVG_GLES2_IMPLEMENTATION
 #include "nanovg_gl.h"
+#include "nanovg_gl_utils.h"
 #include "demo.h"
 #include "perf.h"
 
@@ -64,14 +63,12 @@ int main()
 
     glfwSetErrorCallback(errorcb);
 
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-#ifdef DEMO_MSAA
-    glfwWindowHint(GLFW_SAMPLES, 4);
-#endif
 
-    window = glfwCreateWindow(1000, 600, "NanoVG", NULL, NULL);
-    //	window = glfwCreateWindow(1000, 600, "NanoVG", glfwGetPrimaryMonitor(), NULL);
+    window = glfwCreateWindow(1200, 1000, "NanoVG", NULL, NULL);
+    //	window = glfwCreateWindow(1200, 1000, "NanoVG", glfwGetPrimaryMonitor(), NULL);
     if (!window) {
         glfwTerminate();
         return -1;
@@ -80,18 +77,8 @@ int main()
     glfwSetKeyCallback(window, key);
 
     glfwMakeContextCurrent(window);
-#ifdef NANOVG_GLEW
-    if (glewInit() != GLEW_OK) {
-        printf("Could not init glew.\n");
-        return -1;
-    }
-#endif
 
-#ifdef DEMO_MSAA
-    vg = nvgCreateGL2(NVG_STENCIL_STROKES | NVG_DEBUG);
-#else
-    vg = nvgCreateGL2(NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_DEBUG);
-#endif
+    vg = nvgCreateGLES2(NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_DEBUG);
     if (vg == NULL) {
         printf("Could not init nanovg.\n");
         return -1;
@@ -118,7 +105,6 @@ int main()
         glfwGetCursorPos(window, &mx, &my);
         glfwGetWindowSize(window, &winWidth, &winHeight);
         glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-
         // Calculate pixel ration for hi-dpi devices.
         pxRatio = (float)fbWidth / (float)winWidth;
 
@@ -130,6 +116,11 @@ int main()
             glClearColor(0.3f, 0.3f, 0.32f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+
         nvgBeginFrame(vg, (float)winWidth, (float)winHeight, pxRatio);
 
         renderDemo(vg, (float)mx, (float)my, (float)winWidth, (float)winHeight, (float)t, blowup, &data);
@@ -139,8 +130,10 @@ int main()
 
         if (screenshot) {
             screenshot = 0;
-            saveScreenShot(fbWidth, fbHeight, premult, "dump.png");
+            saveScreenShot(fbWidth, fbHeight, premult, "dump.png", 0);
         }
+
+        glEnable(GL_DEPTH_TEST);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -148,7 +141,7 @@ int main()
 
     freeDemoData(vg, &data);
 
-    nvgDeleteGL2(vg);
+    nvgDeleteGLES2(vg);
 
     glfwTerminate();
     return 0;

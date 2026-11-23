@@ -139,6 +139,40 @@ struct NVGtextRow {
 };
 typedef struct NVGtextRow NVGtextRow;
 
+// Axis-aligned rectangle in local (pre-transform) coordinates. Mirrors nvg::Rect.
+struct NVGrect {
+    float x, y, w, h;
+};
+typedef struct NVGrect NVGrect;
+
+// How an nvgDraw* call renders its shape, analogous to SkPaint::Style. Mirrors nvg::PaintStyle.
+// NVG_PAINT_FILL uses the current fill paint, NVG_PAINT_STROKE the current stroke paint/width/caps/joins.
+enum NVGpaintStyle {
+    NVG_PAINT_FILL = 0,
+    NVG_PAINT_STROKE = 1,
+    NVG_PAINT_FILL_AND_STROKE = 2,
+};
+
+// Interpretation of the point list passed to nvgDrawPoints, analogous to SkCanvas::PointMode. Mirrors nvg::PointMode.
+enum NVGpointMode {
+    NVG_POINTS_POINTS = 0,   // Each point is drawn as a dot of strokeWidth diameter (round dot for NVG_ROUND caps, else square).
+    NVG_POINTS_LINES = 1,    // Each consecutive pair of points is drawn as an independent line segment.
+    NVG_POINTS_POLYGON = 2,  // The points are drawn as one connected, open polyline.
+};
+
+// Flags accepted by the backend constructors (nvgCreateGL*, nvgCreateVk). Mirrors nvg::CreateFlags.
+enum NVGcreateFlags {
+    // Flag indicating if geometry based anti-aliasing is used (may not be needed when using MSAA).
+    NVG_ANTIALIAS = 1 << 0,
+    // Flag indicating if strokes should be drawn using stencil buffer. The rendering will be a little
+    // slower, but path overlaps (i.e. self-intersecting or sharp turns) will be drawn just once.
+    NVG_STENCIL_STROKES = 1 << 1,
+    // Flag indicating that additional debug checks are done.
+    NVG_DEBUG = 1 << 2,
+};
+
+struct NVGvertex;
+
 enum NVGimageFlags {
     NVG_IMAGE_GENERATE_MIPMAPS = 1 << 0,  // Generate mipmaps during creation of the image.
     NVG_IMAGE_REPEATX = 1 << 1,           // Repeat image in X direction.
@@ -511,6 +545,60 @@ void nvgFill(NVGcontext* ctx);
 
 // Fills the current path with current stroke style.
 void nvgStroke(NVGcontext* ctx);
+
+//
+// Immediate draw calls (Skia style)
+//
+// One-call draw functions modeled after SkCanvas; the C counterparts of the nvg::Context::draw* methods.
+// Each call builds its own path and renders it with the current state (paints, stroke width, caps, joins,
+// transform, scissor, alpha, composite operation). They replace the current path, so call them outside of
+// an nvgBeginPath()/nvgFill() sequence. `style` is one of NVGpaintStyle.
+
+// Fills the whole viewport (respecting scissor) with a paint or color, like SkCanvas::drawPaint/drawColor.
+void nvgDrawPaint(NVGcontext* ctx, NVGpaint paint);
+void nvgDrawColor(NVGcontext* ctx, NVGcolor color);
+
+// Replaces the pixels in the viewport (respecting scissor) with color, ignoring blending, like SkCanvas::clear.
+void nvgClear(NVGcontext* ctx, NVGcolor color);
+
+// Strokes a single line segment with the current stroke style.
+void nvgDrawLine(NVGcontext* ctx, float x0, float y0, float x1, float y1);
+
+// pts is an array of count (x, y) pairs, i.e. 2 * count floats. mode is one of NVGpointMode.
+void nvgDrawPoints(NVGcontext* ctx, int mode, const float* pts, int count);
+void nvgDrawPoint(NVGcontext* ctx, float x, float y);
+
+// Closed polygon through count (x, y) pairs.
+void nvgDrawPolygon(NVGcontext* ctx, const float* pts, int count, int style);
+void nvgDrawRect(NVGcontext* ctx, NVGrect r, int style);
+void nvgDrawRoundRect(NVGcontext* ctx, NVGrect r, float radius, int style);
+void nvgDrawRoundRectVarying(NVGcontext* ctx, NVGrect r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, int style);
+
+// Fills the area between two rounded rects (outer minus inner), like SkCanvas::drawDRRect.
+void nvgDrawDRRect(NVGcontext* ctx, NVGrect outer, float outerRadius, NVGrect inner, float innerRadius);
+void nvgDrawCircle(NVGcontext* ctx, float cx, float cy, float r, int style);
+
+// Ellipse inscribed in the rect, like SkCanvas::drawOval.
+void nvgDrawOval(NVGcontext* ctx, NVGrect oval, int style);
+
+// Circular arc, like SkCanvas::drawArc. Angles in radians; positive sweep is clockwise (y-down).
+// With useCenter non-zero the arc is closed through the center (a wedge); otherwise fill draws the chord segment.
+void nvgDrawArc(NVGcontext* ctx, float cx, float cy, float r, float startAngle, float sweepAngle, int useCenter, int style);
+
+// Draws the full image with its top-left corner at (x, y), like SkCanvas::drawImage.
+void nvgDrawImage(NVGcontext* ctx, int image, float x, float y, float alpha);
+
+// Draws the src sub-rect of the image (in image pixels) scaled into dst, like SkCanvas::drawImageRect.
+// Pass src = NULL to draw the whole image.
+void nvgDrawImageRect(NVGcontext* ctx, int image, const NVGrect* src, NVGrect dst, float alpha);
+
+// Nine-patch: corners outside center (image pixels) keep their size, edges stretch along one axis,
+// and the center stretches in both, like SkCanvas::drawImageNine.
+void nvgDrawImageNine(NVGcontext* ctx, int image, NVGrect center, NVGrect dst, float alpha);
+
+// Draws textured triangles (3 vertices per triangle). Vertex x/y are local coordinates and u/v are
+// normalized texture coordinates in [0, 1]; s/t are ignored. Like SkCanvas::drawVertices in triangle mode.
+void nvgDrawVertices(NVGcontext* ctx, const struct NVGvertex* verts, int nverts, int image, float alpha);
 
 //
 // Text

@@ -7,3 +7,9 @@
 [submodule "external/SDL"]
 	path = external/SDL
 	url = https://github.com/libsdl-org/SDL.git
+[submodule "external/Vulkan-Headers"]
+	path = external/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "external/glslang"]
+	path = external/glslang
+	url = https://github.com/KhronosGroup/glslang.git

@@ -6,6 +6,7 @@
 #include <string>
 #include <array>
 #include <cstring>
+#ifndef NANOVG_VULKAN
 #ifdef NANOVG_GLEW
 #include <GL/glew.h>
 #endif
@@ -18,6 +19,7 @@
 #define GLFW_INCLUDE_GLEXT
 #include <GLFW/glfw3.h>
 #endif
+#endif
 #include "nanovg.hpp"
 #ifdef _MSC_VER
 #define snprintf _snprintf
@@ -25,6 +27,29 @@
 #include <iconv.h>
 #endif
 
+#ifdef NANOVG_VULKAN
+// GPU timing is not implemented for the Vulkan example; the graph is hidden when unsupported.
+void initGPUTimer(GPUtimer* timer)
+{
+    timer->supported = 0;
+    timer->cur = 0;
+    timer->ret = 0;
+    timer->queries.fill(0u);
+}
+
+void startGPUTimer(GPUtimer* timer)
+{
+    UNUSED(timer);
+}
+
+int stopGPUTimer(GPUtimer* timer, float* times, int maxTimes)
+{
+    UNUSED(timer);
+    UNUSED(times);
+    UNUSED(maxTimes);
+    return 0;
+}
+#else
 // timer query support
 #ifndef GL_ARB_timer_query
 #define GL_TIME_ELAPSED 0x88BF
@@ -84,6 +109,7 @@ int stopGPUTimer(GPUtimer* timer, float* times, int maxTimes)
     }
     return n;
 }
+#endif
 
 void initGraph(PerfGraph& graph, int style, const std::string& name)
 {

@@ -11,6 +11,7 @@ typedef enum NvgwinProfile {
     NVGWIN_PROFILE_GL3,
     NVGWIN_PROFILE_GLES2,
     NVGWIN_PROFILE_GLES3,
+    NVGWIN_PROFILE_VULKAN,  // No GL context; see nvg_window_vk.hpp for surface creation.
 } NvgwinProfile;
 
 int nvgwin_init(void);

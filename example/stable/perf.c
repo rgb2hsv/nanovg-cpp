@@ -2,10 +2,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#ifndef NANOVG_VULKAN
 #ifdef NANOVG_GLEW
 #include <GL/glew.h>
 #endif
 #include <GLFW/glfw3.h>
+#endif
 #include "nanovg.h"
 
 #ifdef _MSC_VER
@@ -14,6 +16,26 @@
 #include <iconv.h>
 #endif
 
+#ifdef NANOVG_VULKAN
+// GPU timing is not implemented for the Vulkan example; the graph is hidden when unsupported.
+void initGPUTimer(GPUtimer* timer)
+{
+    memset(timer, 0, sizeof(*timer));
+}
+
+void startGPUTimer(GPUtimer* timer)
+{
+    NVG_NOTUSED(timer);
+}
+
+int stopGPUTimer(GPUtimer* timer, float* times, int maxTimes)
+{
+    NVG_NOTUSED(timer);
+    NVG_NOTUSED(times);
+    NVG_NOTUSED(maxTimes);
+    return 0;
+}
+#else
 // timer query support
 #ifndef GL_ARB_timer_query
 #define GL_TIME_ELAPSED 0x88BF
@@ -70,6 +92,7 @@ int stopGPUTimer(GPUtimer* timer, float* times, int maxTimes)
     }
     return n;
 }
+#endif
 
 void initGraph(PerfGraph* fps, int style, const char* name)
 {

@@ -8,7 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_STANDARD 11)
 
 option(NVG_FAST_SQRT "Use fast inverse-sqrt path in the NanoVG core (defines NANOVG_FAST_SQRT)" ON)
-option(NANOVG_USE_SDL3 "Build C++ examples with SDL3 instead of GLFW (legacy examples still use GLFW)" ON)
+option(NANOVG_USE_SDL3 "Build C++ examples with SDL3 instead of GLFW (stable C API examples always use GLFW)" ON)
+option(NANOVG_BUILD_VULKAN "Build the nanovg_vk stable C API library and the Vulkan examples (example_vk, example_stable_vk); uses the external/Vulkan-Headers submodule" ON)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DGL_GLEXT_PROTOTYPES=1 -O3 -Wall -Wreturn-type -Wno-reorder -Wno-implicit-fallthrough -Wno-unused-variable -Wno-unused-parameter -Wno-unused-function -Wno-deprecated -fmessage-length=0")
@@ -32,21 +33,23 @@ endif()
 
 set(SRC_DIR "./src")
 set(NVG_SRC_DIR "${SRC_DIR}/nvg")
-set(NVG_LEGACY_DIR "${NVG_SRC_DIR}/legacy")
+set(NVG_STABLE_DIR "${NVG_SRC_DIR}/stable")
 set(NVG_THIRD_PARTY_DIR "${SRC_DIR}/thirdParty")
 file(GLOB SRCS ${NVG_SRC_DIR}/*.cpp)
 file(GLOB HDRS ${NVG_SRC_DIR}/*.h ${NVG_SRC_DIR}/*.hpp ${NVG_THIRD_PARTY_DIR}/*.h ${NVG_THIRD_PARTY_DIR}/*.hpp)
 list(APPEND HDRS
-	"${NVG_LEGACY_DIR}/nanovg.h"
-	"${NVG_LEGACY_DIR}/nanovg_gl.h"
-	"${NVG_LEGACY_DIR}/nanovg_gl_utils.h"
+	"${NVG_STABLE_DIR}/nanovg.h"
+	"${NVG_STABLE_DIR}/nanovg_gl.h"
+	"${NVG_STABLE_DIR}/nanovg_gl_utils.h"
+	"${NVG_STABLE_DIR}/nanovg_vk.h"
 )
 
 install(FILES ${HDRS} DESTINATION include/${PROJECT_NAME}/)
+install(FILES "${NVG_SRC_DIR}/shaders/nanovg_vk_vert.spv.inc" "${NVG_SRC_DIR}/shaders/nanovg_vk_frag.spv.inc" DESTINATION include/${PROJECT_NAME}/shaders/)
 
 add_library(${PROJECT_NAME} ${SRCS})
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
-target_include_directories(${PROJECT_NAME} PUBLIC ${SRC_DIR} ${NVG_LEGACY_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
+target_include_directories(${PROJECT_NAME} PUBLIC ${SRC_DIR} ${NVG_STABLE_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
 if(NVG_FAST_SQRT)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE NANOVG_FAST_SQRT=1)
 else()
@@ -146,14 +149,14 @@ else()
         set(NANOVG_GL_LIBS ${GLEW_TARGET} GLU GL Xext Xi Xrandr X11 Xxf86vm Xinerama Xcursor dl z m)
 endif()
 set(EXAMPLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/example")
-set(EXAMPLE_LEGACY_DIR "${EXAMPLE_DIR}/legacy")
+set(EXAMPLE_STABLE_DIR "${EXAMPLE_DIR}/stable")
 set(COMMON_CXX_FILES "example/demo.cpp" "example/perf.cpp")
 if(NANOVG_USE_SDL3)
 	list(APPEND COMMON_CXX_FILES "example/nvg_window_sdl3.cpp")
 else()
 	list(APPEND COMMON_CXX_FILES "example/nvg_window_glfw.cpp")
 endif()
-set(COMMON_LEGACY_FILES "example/legacy/demo.c" "example/legacy/perf.c")
+set(COMMON_STABLE_FILES "example/stable/demo.c" "example/stable/perf.c")
 
 set(TARGETS ${PROJECT_NAME})
 set(NANOVG_EXAMPLE_PROJECTS gl2 gl3 fbo)
@@ -167,24 +170,99 @@ foreach(EXAMPLE_PROJ IN ITEMS ${NANOVG_EXAMPLE_PROJECTS})
                 target_compile_definitions(example_${EXAMPLE_PROJ} PUBLIC NANOVG_USE_SDL3)
         endif()
         target_link_libraries(example_${EXAMPLE_PROJ} ${PROJECT_NAME} ${NANOVG_GL_LIBS} ${NANOVG_EXAMPLE_WINDOW_LIB})
-        target_include_directories(example_${EXAMPLE_PROJ} PUBLIC ${EXAMPLE_LEGACY_DIR} ${EXAMPLE_DIR} ${SRC_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
+        target_include_directories(example_${EXAMPLE_PROJ} PUBLIC ${EXAMPLE_DIR} ${SRC_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
         target_compile_features(example_${EXAMPLE_PROJ} PRIVATE cxx_std_20)
         if(MSVC)
                 target_compile_options(example_${EXAMPLE_PROJ} PRIVATE /W4)
         endif()
 endforeach()
 
-# Legacy C examples
+# Stable C API examples (example/stable, nanovg.h)
 foreach(EXAMPLE_PROJ IN ITEMS ${NANOVG_EXAMPLE_PROJECTS})
-        add_executable(example_legacy_${EXAMPLE_PROJ} "example/legacy/example_${EXAMPLE_PROJ}.c" ${COMMON_LEGACY_FILES})
-        list(APPEND TARGETS example_legacy_${EXAMPLE_PROJ})
-        target_compile_definitions(example_legacy_${EXAMPLE_PROJ} PUBLIC ${DEFS})
-        target_link_libraries(example_legacy_${EXAMPLE_PROJ} ${PROJECT_NAME} ${NANOVG_GL_LIBS} ${GLFW_TARGET})
-        target_include_directories(example_legacy_${EXAMPLE_PROJ} PUBLIC ${EXAMPLE_LEGACY_DIR} ${SRC_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
+        add_executable(example_stable_${EXAMPLE_PROJ} "example/stable/example_${EXAMPLE_PROJ}.c" ${COMMON_STABLE_FILES})
+        list(APPEND TARGETS example_stable_${EXAMPLE_PROJ})
+        target_compile_definitions(example_stable_${EXAMPLE_PROJ} PUBLIC ${DEFS})
+        target_link_libraries(example_stable_${EXAMPLE_PROJ} ${PROJECT_NAME} ${NANOVG_GL_LIBS} ${GLFW_TARGET})
+        target_include_directories(example_stable_${EXAMPLE_PROJ} PUBLIC ${EXAMPLE_STABLE_DIR} ${SRC_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
         if(MSVC)
-                target_compile_options(example_legacy_${EXAMPLE_PROJ} PRIVATE /W4)
+                target_compile_options(example_stable_${EXAMPLE_PROJ} PRIVATE /W4)
         endif()
 endforeach()
+
+# Vulkan. The backend (nanovg_vk.hpp) only needs the Vulkan headers: it loads every entry point through the
+# vkGetInstanceProcAddr handed to it, and the window library (SDL3/GLFW) opens the Vulkan loader at runtime.
+# Headers and the shader compiler come from pinned submodules, never from a system install, so every machine
+# builds against the same versions.
+if(NANOVG_BUILD_VULKAN)
+	if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/Vulkan-Headers/CMakeLists.txt")
+		message(FATAL_ERROR "external/Vulkan-Headers is missing: run `git submodule update --init external/Vulkan-Headers`, or pass -DNANOVG_BUILD_VULKAN=OFF.")
+	endif()
+	add_subdirectory(external/Vulkan-Headers EXCLUDE_FROM_ALL)
+
+	set(VK_DEFS NANOVG_VULKAN)
+	if(WIN32)
+		list(APPEND VK_DEFS _CRT_SECURE_NO_WARNINGS NOMINMAX NDEBUG _CONSOLE UNICODE _UNICODE)
+	endif()
+	if(NANOVG_USE_SDL3)
+		list(APPEND VK_DEFS NANOVG_USE_SDL3)
+	endif()
+	add_executable(example_vk "example/example_vk.cpp" ${COMMON_CXX_FILES})
+	list(APPEND TARGETS example_vk)
+	target_compile_definitions(example_vk PUBLIC ${VK_DEFS})
+	target_link_libraries(example_vk ${PROJECT_NAME} Vulkan::Headers ${NANOVG_EXAMPLE_WINDOW_LIB})
+	target_include_directories(example_vk PUBLIC ${EXAMPLE_DIR} ${SRC_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
+	target_compile_features(example_vk PRIVATE cxx_std_20)
+	if(MSVC)
+		target_compile_options(example_vk PRIVATE /W4)
+	endif()
+
+	# Stable C API for the Vulkan backend (stable/nanovg_vk.h). C++ code includes nanovg_vk.hpp instead.
+	add_library(nanovg_vk "${NVG_STABLE_DIR}/nanovg_vk.cpp")
+	list(APPEND TARGETS nanovg_vk)
+	target_link_libraries(nanovg_vk PUBLIC ${PROJECT_NAME} Vulkan::Headers)
+	target_compile_features(nanovg_vk PRIVATE cxx_std_20)
+	if(MSVC)
+		target_compile_options(nanovg_vk PRIVATE /W4)
+	endif()
+
+	# Stable C API Vulkan example (always GLFW, like the other stable examples).
+	set(C_VK_DEFS NANOVG_VULKAN)
+	if(WIN32)
+		list(APPEND C_VK_DEFS _CRT_SECURE_NO_WARNINGS NOMINMAX NDEBUG _CONSOLE UNICODE _UNICODE)
+	endif()
+	add_executable(example_stable_vk "example/stable/example_vk.c" ${COMMON_STABLE_FILES})
+	list(APPEND TARGETS example_stable_vk)
+	target_compile_definitions(example_stable_vk PUBLIC ${C_VK_DEFS})
+	target_link_libraries(example_stable_vk nanovg_vk ${GLFW_TARGET})
+	target_include_directories(example_stable_vk PUBLIC ${EXAMPLE_STABLE_DIR} ${SRC_DIR} ${NVG_SRC_DIR} ${NVG_THIRD_PARTY_DIR})
+	if(MSVC)
+		target_compile_options(example_stable_vk PRIVATE /W4)
+	endif()
+
+	# `nanovg_vk_shaders` regenerates the SPIR-V embedded in nanovg_vk.hpp after editing src/nvg/shaders/*.vert|frag,
+	# using glslang from the external/glslang submodule. The generated .inc files are committed so that normal
+	# builds (and header-only users of nanovg_vk.hpp) never need glslang; it is only compiled for this target.
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/glslang/CMakeLists.txt")
+		set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
+		set(ENABLE_OPT OFF CACHE BOOL "" FORCE)  # spirv-opt would pull in SPIRV-Tools; not needed for -V
+		set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+		set(ENABLE_GLSLANG_JS OFF CACHE BOOL "" FORCE)
+		set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
+		set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+		set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
+		add_subdirectory(external/glslang EXCLUDE_FROM_ALL)
+
+		set(NVG_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/nvg/shaders")
+		add_custom_target(nanovg_vk_shaders
+			COMMAND $<TARGET_FILE:glslang-standalone> -V --target-env vulkan1.0 -x -o "${NVG_SHADER_DIR}/nanovg_vk_vert.spv.inc" "${NVG_SHADER_DIR}/nanovg_vk.vert"
+			COMMAND $<TARGET_FILE:glslang-standalone> -V --target-env vulkan1.0 -x -o "${NVG_SHADER_DIR}/nanovg_vk_frag.spv.inc" "${NVG_SHADER_DIR}/nanovg_vk.frag"
+			DEPENDS glslang-standalone
+			COMMENT "Compiling NanoVG Vulkan shaders to SPIR-V with external/glslang"
+			VERBATIM)
+	else()
+		message(STATUS "external/glslang not initialized; the nanovg_vk_shaders target is unavailable.")
+	endif()
+endif()
 
 install(TARGETS ${TARGETS}
         LIBRARY DESTINATION lib

@@ -1,12 +1,17 @@
 #include "demo.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#ifndef NANOVG_VULKAN
 #ifdef NANOVG_GLEW
 #include <GL/glew.h>
 #endif
 #include <GLFW/glfw3.h>
+#endif
 #include "nanovg.h"
+// stb_image's implementation lives in the nanovg library.
+#include "thirdParty/stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "thirdParty/stb_image_write.h"
 
@@ -885,15 +890,66 @@ void drawLines(NVGcontext* vg, float x, float y, float w, float h, float strokeW
     nvgRestore(vg);
 }
 
+// Finds example/<name> in the working directory or up to three of its parents, like the C++ demo.
+static int findFile(const char* name, char* out, size_t outSize)
+{
+    char prefix[16] = "";
+    int i;
+    for (i = 0; i < 4; i++) {
+        FILE* f;
+        snprintf(out, outSize, "%sexample/%s", prefix, name);
+        f = fopen(out, "rb");
+        if (f != NULL) {
+            fclose(f);
+            return 1;
+        }
+        strcat(prefix, "../");
+    }
+    printf("Could not find file: %s\n", name);
+    return 0;
+}
+
+// Builds a 48x48 "panel" texture for the nine-patch demo: rounded 16px corners, a 2px light border,
+// a darker inner fill and a diagonal stripe pattern so stretching of edges/center is easy to see.
+static int createNinePatchImage(NVGcontext* vg)
+{
+    enum { size = 48 };
+    const float corner = 16.0f;
+    unsigned char px[size * size * 4];
+    int x, y;
+    for (y = 0; y < size; y++) {
+        for (x = 0; x < size; x++) {
+            // Signed distance to a rounded rect covering the whole image.
+            const float cx = x + 0.5f, cy = y + 0.5f;
+            const float qx = fabsf(cx - size * 0.5f) - (size * 0.5f - corner);
+            const float qy = fabsf(cy - size * 0.5f) - (size * 0.5f - corner);
+            const float mx = qx > 0.0f ? qx : 0.0f, my = qy > 0.0f ? qy : 0.0f;
+            const float inside = qx > qy ? qx : qy;
+            const float dist = sqrtf(mx * mx + my * my) + (inside < 0.0f ? inside : 0.0f) - corner;
+            const float coverage = clampf(0.5f - dist, 0.0f, 1.0f);
+            const int border = dist > -2.5f;
+            const int stripe = ((x + y) / 4) % 2 == 0;
+            unsigned char* p = &px[(y * size + x) * 4];
+            p[0] = border ? 230 : (stripe ? 60 : 48);
+            p[1] = border ? 200 : (stripe ? 110 : 90);
+            p[2] = border ? 120 : (stripe ? 170 : 140);
+            p[3] = (unsigned char)(coverage * 255.0f);
+        }
+    }
+    return nvgCreateImageRGBA(vg, size, size, 0, px);
+}
+
 int loadDemoData(NVGcontext* vg, DemoData* data)
 {
     int i;
+    char file[512];
 
     if (vg == NULL) return -1;
 
     for (i = 0; i < 12; i++) {
-        char file[128];
-        snprintf(file, 128, "../example/images/image%d.jpg", i + 1);
+        char name[64];
+        snprintf(name, sizeof(name), "images/image%d.jpg", i + 1);
+        if (!findFile(name, file, sizeof(file))) return -1;
         data->images[i] = nvgCreateImage(vg, file, 0);
         if (data->images[i] == 0) {
             printf("Could not load %s.\n", file);
@@ -901,28 +957,38 @@ int loadDemoData(NVGcontext* vg, DemoData* data)
         }
     }
 
-    data->fontIcons = nvgCreateFont(vg, "icons", "../example/entypo.ttf");
+    if (!findFile("entypo.ttf", file, sizeof(file))) return -1;
+    data->fontIcons = nvgCreateFont(vg, "icons", file);
     if (data->fontIcons == -1) {
         printf("Could not add font icons.\n");
         return -1;
     }
-    data->fontNormal = nvgCreateFont(vg, "sans", "../example/Roboto-Regular.ttf");
+    if (!findFile("Roboto-Regular.ttf", file, sizeof(file))) return -1;
+    data->fontNormal = nvgCreateFont(vg, "sans", file);
     if (data->fontNormal == -1) {
         printf("Could not add font italic.\n");
         return -1;
     }
-    data->fontBold = nvgCreateFont(vg, "sans-bold", "../example/Roboto-Bold.ttf");
+    if (!findFile("Roboto-Bold.ttf", file, sizeof(file))) return -1;
+    data->fontBold = nvgCreateFont(vg, "sans-bold", file);
     if (data->fontBold == -1) {
         printf("Could not add font bold.\n");
         return -1;
     }
-    data->fontEmoji = nvgCreateFont(vg, "emoji", "../example/NotoEmoji-Regular.ttf");
+    if (!findFile("NotoEmoji-Regular.ttf", file, sizeof(file))) return -1;
+    data->fontEmoji = nvgCreateFont(vg, "emoji", file);
     if (data->fontEmoji == -1) {
         printf("Could not add font emoji.\n");
         return -1;
     }
     nvgAddFallbackFontId(vg, data->fontNormal, data->fontEmoji);
     nvgAddFallbackFontId(vg, data->fontBold, data->fontEmoji);
+
+    data->ninePatch = createNinePatchImage(vg);
+    if (data->ninePatch == 0) {
+        printf("Could not create nine-patch image.\n");
+        return -1;
+    }
 
     return 0;
 }
@@ -934,6 +1000,7 @@ void freeDemoData(NVGcontext* vg, DemoData* data)
     if (vg == NULL) return;
 
     for (i = 0; i < 12; i++) nvgDeleteImage(vg, data->images[i]);
+    if (data->ninePatch != 0) nvgDeleteImage(vg, data->ninePatch);
 }
 
 void drawParagraph(NVGcontext* vg, float x, float y, float width, float height, float mx, float my)
@@ -1041,7 +1108,7 @@ void drawParagraph(NVGcontext* vg, float x, float y, float width, float height, 
     nvgBeginPath(vg);
     nvgFillColor(vg, nvgRGBA(220, 220, 220, 255));
     nvgRoundedRect(vg, bounds[0] - 2, bounds[1] - 2, (int)(bounds[2] - bounds[0]) + 4, (int)(bounds[3] - bounds[1]) + 4, 3);
-    px = (int)((bounds[2] + bounds[0]) / 2);
+    px = (bounds[2] + bounds[0]) * 0.5f;
     nvgMoveTo(vg, px, bounds[1] - 10);
     nvgLineTo(vg, px + 7, bounds[1] + 1);
     nvgLineTo(vg, px - 7, bounds[1] + 1);
@@ -1205,6 +1272,11 @@ void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, f
 {
     float x, y, popy;
 
+    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = floorf(height * 0.4f);
+    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
+    height -= drawCallsHeight;
+
     drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
     drawStylizedLines(vg, width - 245, 15, 180, 130);
     drawFancyText(vg, width - 160, 170);
@@ -1284,6 +1356,305 @@ void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, f
 
     drawBezierCurve(vg, width - 380, height - 220, 100, t);
     drawScaledText(vg, 450.0, 50, t);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Draw-calls demo page: one cell per Skia-style immediate draw call (C port of demo.cpp).
+
+static NVGrect rect(float x, float y, float w, float h)
+{
+    NVGrect r;
+    r.x = x;
+    r.y = y;
+    r.w = w;
+    r.h = h;
+    return r;
+}
+
+static void drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title)
+{
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 12));
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 40));
+    nvgStrokeWidth(vg, 1.0f);
+    nvgDrawRoundRect(vg, cell, 6.0f, NVG_PAINT_FILL_AND_STROKE);
+
+    nvgFontSize(vg, 13.0f);
+    nvgFontFace(vg, "sans-bold");
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 180));
+    nvgText(vg, cell.x + 8, cell.y + 6, title, NULL);
+}
+
+static void demoRects(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float y = c.y + 40;
+    const float w = (c.w - 40) / 3.0f;
+    const float r = 20.0f + 15.0f * sinf(t);
+    NVG_NOTUSED(data);
+    nvgFillColor(vg, nvgRGBA(255, 160, 0, 255));
+    nvgStrokeColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgStrokeWidth(vg, 3.0f);
+    nvgDrawRect(vg, rect(c.x + 10, y, w, 50), NVG_PAINT_FILL);
+    nvgDrawRect(vg, rect(c.x + 20 + w, y, w, 50), NVG_PAINT_STROKE);
+    nvgDrawRoundRect(vg, rect(c.x + 30 + w * 2, y, w, 50), 6.0f + 6.0f * sinf(t * 2.0f), NVG_PAINT_FILL_AND_STROKE);
+    nvgDrawRoundRectVarying(vg, rect(c.x + 10, y + 64, c.w - 20, 50), r, 4, r, 4, NVG_PAINT_FILL_AND_STROKE);
+}
+
+static void demoDRRect(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float inset = 14.0f + 10.0f * sinf(t * 1.5f);
+    const NVGrect outer = rect(c.x + 20, c.y + 36, c.w - 40, c.h - 50);
+    const NVGrect inner = rect(outer.x + inset, outer.y + inset, outer.w - inset * 2, outer.h - inset * 2);
+    NVG_NOTUSED(data);
+    nvgFillPaint(vg, nvgLinearGradient(vg, outer.x, outer.y, outer.x + outer.w, outer.y + outer.h, nvgRGBA(255, 90, 120, 255), nvgRGBA(120, 80, 255, 255)));
+    nvgDrawDRRect(vg, outer, 24.0f, inner, 24.0f - inset * 0.8f);
+}
+
+static void demoCircles(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float cy = c.y + c.h * 0.5f + 12;
+    const float rx = 30 + 12 * sinf(t), ry = 45 - 12 * sinf(t);
+    NVG_NOTUSED(data);
+    nvgFillColor(vg, nvgRGBA(120, 220, 120, 255));
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 220));
+    nvgStrokeWidth(vg, 3.0f);
+    nvgDrawCircle(vg, c.x + 45, cy, 28, NVG_PAINT_FILL);
+    nvgDrawCircle(vg, c.x + 110, cy, 22 + 6 * sinf(t * 3.0f), NVG_PAINT_STROKE);
+    nvgDrawOval(vg, rect(c.x + c.w - 50 - rx, cy - ry, rx * 2, ry * 2), NVG_PAINT_FILL_AND_STROKE);
+}
+
+static void demoArcs(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float cy = c.y + c.h * 0.5f + 12;
+    const float sweep = NVG_PI * (1.0f + 0.9f * sinf(t));
+    const float start = t * 0.7f;
+    NVG_NOTUSED(data);
+    nvgFillColor(vg, nvgRGBA(255, 200, 40, 255));
+    nvgStrokeColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgStrokeWidth(vg, 3.0f);
+    nvgDrawArc(vg, c.x + 42, cy, 30, start, sweep, 1, NVG_PAINT_FILL);                    // wedge
+    nvgDrawArc(vg, c.x + 117, cy, 30, start, sweep, 0, NVG_PAINT_FILL_AND_STROKE);        // chord + open arc
+    nvgLineCap(vg, NVG_ROUND);
+    nvgStrokeWidth(vg, 6.0f);
+    nvgDrawArc(vg, c.x + 192, cy, 30, -NVG_PI * 0.5f, -sweep, 0, NVG_PAINT_STROKE);       // counter-clockwise
+    nvgLineCap(vg, NVG_BUTT);
+}
+
+static void demoLines(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f + 12;
+    int i;
+    NVG_NOTUSED(data);
+    for (i = 0; i < 12; i++) {
+        const float a = t * 0.5f + i * NVG_PI / 6.0f;
+        nvgStrokeColor(vg, nvgHSLA(i / 12.0f, 0.7f, 0.6f, 255));
+        nvgStrokeWidth(vg, 1.0f + i * 0.4f);
+        nvgDrawLine(vg, cx + cosf(a) * 12, cy + sinf(a) * 12, cx + cosf(a) * 55, cy + sinf(a) * 55);
+    }
+}
+
+static void demoPoints(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    float wave[2 * 16];
+    float ticks[2 * 10];
+    int i;
+    NVG_NOTUSED(data);
+    for (i = 0; i < 16; i++) {
+        wave[i * 2] = c.x + 15 + i * (c.w - 30) / 15.0f;
+        wave[i * 2 + 1] = c.y + 60 + sinf(t * 2.0f + i * 0.6f) * 18.0f;
+    }
+    nvgStrokeColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgStrokeWidth(vg, 2.0f);
+    nvgDrawPoints(vg, NVG_POINTS_POLYGON, wave, 16);
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255));
+    nvgStrokeWidth(vg, 7.0f);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgDrawPoints(vg, NVG_POINTS_POINTS, wave, 16);  // round dots
+
+    for (i = 0; i < 5; i++) {
+        const float x = c.x + 20 + i * (c.w - 40) / 4.0f;
+        ticks[i * 4 + 0] = x;
+        ticks[i * 4 + 1] = c.y + c.h - 40;
+        ticks[i * 4 + 2] = x + 10 * sinf(t + i);
+        ticks[i * 4 + 3] = c.y + c.h - 12;
+    }
+    nvgLineCap(vg, NVG_BUTT);
+    nvgStrokeColor(vg, nvgRGBA(255, 160, 0, 255));
+    nvgStrokeWidth(vg, 3.0f);
+    nvgDrawPoints(vg, NVG_POINTS_LINES, ticks, 10);  // independent segments
+    nvgStrokeWidth(vg, 8.0f);
+    nvgDrawPoint(vg, c.x + c.w - 16, c.y + 22);  // square dot (butt cap)
+}
+
+static void demoPolygon(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float cx = c.x + c.w * 0.5f, cy = c.y + c.h * 0.5f + 12;
+    float star[2 * 10];
+    int i;
+    NVG_NOTUSED(data);
+    for (i = 0; i < 10; i++) {
+        const float a = t * 0.6f + i * NVG_PI / 5.0f - NVG_PI * 0.5f;
+        const float r = (i % 2 == 0) ? 55.0f : 24.0f;
+        star[i * 2] = cx + cosf(a) * r;
+        star[i * 2 + 1] = cy + sinf(a) * r;
+    }
+    nvgFillPaint(vg, nvgRadialGradient(vg, cx, cy, 5, 55, nvgRGBA(255, 240, 120, 255), nvgRGBA(255, 120, 0, 255)));
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 230));
+    nvgStrokeWidth(vg, 2.0f);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgDrawPolygon(vg, star, 10, NVG_PAINT_FILL_AND_STROKE);
+    nvgLineJoin(vg, NVG_MITER);
+}
+
+static void demoPaintAndColor(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float shift = c.w * 0.5f * sinf(t);
+    NVG_NOTUSED(data);
+    // nvgDrawPaint / nvgDrawColor cover the whole viewport; scissor them down to the cell.
+    nvgSave(vg);
+    nvgScissor(vg, c.x + 10, c.y + 32, c.w - 20, (c.h - 42) * 0.5f - 4);
+    nvgDrawPaint(vg, nvgLinearGradient(vg, c.x + shift, 0, c.x + c.w + shift, 0, nvgRGBA(255, 60, 60, 255), nvgRGBA(60, 60, 255, 255)));
+    nvgRestore(vg);
+
+    nvgSave(vg);
+    nvgScissor(vg, c.x + 10, c.y + 32 + (c.h - 42) * 0.5f, c.w - 20, (c.h - 42) * 0.5f);
+    nvgDrawColor(vg, nvgHSLA(fmodf(t * 0.1f, 1.0f), 0.6f, 0.5f, 255));
+    nvgRestore(vg);
+}
+
+static void demoImages(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const int image = data->images[4];
+    int iw = 0, ih = 0;
+    float sx, sy;
+    NVGrect src, dst;
+    nvgImageSize(vg, image, &iw, &ih);
+    // Full image at its natural size, scaled down via the transform.
+    nvgSave(vg);
+    nvgTranslate(vg, c.x + 10, c.y + 34);
+    nvgScale(vg, 0.8f, 0.8f);
+    nvgDrawImage(vg, image, 0, 0, 1.0f);
+    nvgRestore(vg);
+    // A 50x50 window panning across the image, magnified into the right half.
+    sx = (iw - 50) * (0.5f + 0.5f * sinf(t));
+    sy = (ih - 50) * (0.5f + 0.5f * cosf(t * 0.7f));
+    src = rect(sx, sy, 50, 50);
+    dst = rect(c.x + c.w - 10 - 100, c.y + 34, 100, 100);
+    nvgDrawImageRect(vg, image, &src, dst, 1.0f);
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 160));
+    nvgStrokeWidth(vg, 1.0f);
+    nvgDrawRect(vg, rect(c.x + 10 + sx * 0.8f, c.y + 34 + sy * 0.8f, 40, 40), NVG_PAINT_STROKE);
+    nvgDrawRect(vg, dst, NVG_PAINT_STROKE);
+}
+
+static void demoNinePatch(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    const float w = 60 + (c.w - 80) * (0.5f + 0.5f * sinf(t * 0.8f));
+    const float h = 40 + (c.h - 82) * (0.5f + 0.5f * cosf(t * 0.6f));
+    nvgDrawImageNine(vg, data->ninePatch, rect(16, 16, 16, 16), rect(c.x + (c.w - w) * 0.5f, c.y + 32 + (c.h - 42 - h) * 0.5f, w, h), 1.0f);
+}
+
+static NVGvertex meshVertex(int i, int j, float x0, float y0, float gw, float gh, int nx, int ny, float t)
+{
+    NVGvertex v;
+    v.x = x0 + i * gw + sinf(t * 2.0f + j * 0.9f) * 6.0f;
+    v.y = y0 + j * gh + cosf(t * 1.7f + i * 0.8f) * 5.0f;
+    v.u = (float)i / nx;
+    v.v = (float)j / ny;
+    v.s = 0.0f;
+    v.t = 0.0f;
+    return v;
+}
+
+static void demoVertices(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // A waving 6x4 textured mesh: two triangles per quad.
+    enum { nx = 6, ny = 4 };
+    const float x0 = c.x + 20, y0 = c.y + 40;
+    const float gw = (c.w - 40) / nx, gh = (c.h - 60) / ny;
+    NVGvertex verts[nx * ny * 6];
+    int i, j, n = 0;
+    for (j = 0; j < ny; j++) {
+        for (i = 0; i < nx; i++) {
+            verts[n++] = meshVertex(i, j, x0, y0, gw, gh, nx, ny, t);
+            verts[n++] = meshVertex(i + 1, j, x0, y0, gw, gh, nx, ny, t);
+            verts[n++] = meshVertex(i, j + 1, x0, y0, gw, gh, nx, ny, t);
+            verts[n++] = meshVertex(i + 1, j, x0, y0, gw, gh, nx, ny, t);
+            verts[n++] = meshVertex(i + 1, j + 1, x0, y0, gw, gh, nx, ny, t);
+            verts[n++] = meshVertex(i, j + 1, x0, y0, gw, gh, nx, ny, t);
+        }
+    }
+    nvgDrawVertices(vg, verts, n, data->images[2], 1.0f);
+}
+
+static void demoClear(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // Checkerboard background, then nvgClear() a moving window: it replaces the pixels outright,
+    // ignoring the 25% global alpha that would otherwise make a fill translucent.
+    const NVGrect area = rect(c.x + 10, c.y + 32, c.w - 20, c.h - 42);
+    const float x = area.x + (area.w * 0.5f - 10) * (0.5f + 0.5f * sinf(t));
+    int i, j;
+    NVG_NOTUSED(data);
+    for (j = 0; j < 6; j++)
+        for (i = 0; i < 12; i++) {
+            nvgFillColor(vg, (i + j) % 2 ? nvgRGBA(200, 200, 200, 255) : nvgRGBA(90, 90, 90, 255));
+            nvgDrawRect(vg, rect(area.x + i * area.w / 12, area.y + j * area.h / 6, area.w / 12, area.h / 6), NVG_PAINT_FILL);
+        }
+    nvgSave(vg);
+    nvgGlobalAlpha(vg, 0.25f);
+    nvgFillColor(vg, nvgRGBA(255, 80, 80, 255));
+    nvgDrawRect(vg, rect(x, area.y + 8, area.w * 0.5f, area.h * 0.35f), NVG_PAINT_FILL);  // translucent fill
+    nvgScissor(vg, x, area.y + area.h * 0.55f, area.w * 0.5f, area.h * 0.35f);
+    nvgClear(vg, nvgRGBA(255, 80, 80, 255));  // opaque despite globalAlpha
+    nvgRestore(vg);
+}
+
+typedef void (*DrawCallsDemoFn)(NVGcontext* vg, NVGrect c, float t, const DemoData* data);
+
+void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float height, float t, DemoData* data)
+{
+    enum { cols = 6, rows = 2 };
+    // Each cell's content is authored in a fixed design space and scaled to fit the cell.
+    const float designW = 240.0f, designH = 175.0f;
+    const float pad = 10.0f, top = 34.0f;
+    const float cw = (width - pad * (cols + 1)) / cols;
+    const float ch = (height - top - pad * rows) / rows;
+    static const char* titles[cols * rows] = {
+        "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawPoints / drawPoint",
+        "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine", "drawVertices", "clear",
+    };
+    static const DrawCallsDemoFn draws[cols * rows] = {
+        demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoPoints, demoPolygon, demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear,
+    };
+    float s;
+    int i;
+
+    // Panel background and header.
+    nvgFillColor(vg, nvgRGBA(36, 38, 46, 255));
+    nvgDrawRect(vg, rect(x, y, width, height), NVG_PAINT_FILL);
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 30));
+    nvgStrokeWidth(vg, 1.0f);
+    nvgDrawLine(vg, x, y + 0.5f, x + width, y + 0.5f);
+
+    nvgFontSize(vg, 18.0f);
+    nvgFontFace(vg, "sans-bold");
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 220));
+    nvgText(vg, x + 12, y + 18, "Skia-style draw calls", NULL);
+
+    if (cw <= 0.0f || ch <= 0.0f) return;
+    s = cw / designW < ch / designH ? cw / designW : ch / designH;
+
+    for (i = 0; i < cols * rows; i++) {
+        const NVGrect c = rect(x + pad + (i % cols) * (cw + pad), y + top + (i / cols) * (ch + pad), cw, ch);
+        nvgSave(vg);
+        drawCallsCell(vg, c, titles[i]);
+        // Center the scaled design-space box in the cell.
+        nvgTranslate(vg, c.x + (cw - designW * s) * 0.5f, c.y + (ch - designH * s) * 0.5f);
+        nvgScale(vg, s, s);
+        draws[i](vg, rect(0, 0, designW, designH), t, data);
+        nvgRestore(vg);
+    }
 }
 
 static int mini(int a, int b)
@@ -1375,19 +1746,85 @@ static void flipHorizontal(unsigned char* image, int w, int h, int stride)
     }
 }
 
-void saveScreenShot(int w, int h, int premult, const char* name)
+// Compares against an existing PNG of the same name; writes <name>-diff.png on mismatch. Returns 1 when they match
+// (or there is nothing to compare with).
+static int comparePreviousScreenShot(int nw, int nh, int premult, const unsigned char* nimg, const char* name)
 {
-    unsigned char* image = (unsigned char*)malloc(w * h * 4);
-    if (image == NULL) return;
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, image);
+    int w, h, n, ret = 1;
+    size_t idx, size;
+    unsigned char *img, *diff;
+    const int threshold = 2;
+    stbi_set_unpremultiply_on_load(premult);
+    stbi_convert_iphone_png_to_rgb(1);
+    img = stbi_load(name, &w, &h, &n, 4);
+    if (img == NULL) {
+        printf("Skipped screenshot comparison since there is no previous screenshot to compare to.\n");
+        return 1;
+    }
+    if (w != nw || h != nh) {
+        printf("Screenshot does not match previous screenshot size %d x %d vs %d x %d.\n", w, h, nw, nh);
+        stbi_image_free(img);
+        return 0;
+    }
+    size = (size_t)w * h * 4;
+    diff = (unsigned char*)malloc(size);
+    for (idx = 0; idx < size; idx += 4) {
+        int rd = abs(img[idx] - nimg[idx]), gd = abs(img[idx + 1] - nimg[idx + 1]);
+        int bd = abs(img[idx + 2] - nimg[idx + 2]), ad = abs(img[idx + 3] - nimg[idx + 3]);
+        diff[idx] = (unsigned char)mini(rd * 4, 255);
+        diff[idx + 1] = (unsigned char)mini(gd * 4, 255);
+        diff[idx + 2] = (unsigned char)mini(bd * 4, 255);
+        diff[idx + 3] = 255;
+        if (rd > threshold || gd > threshold || bd > threshold || ad > threshold) ret = 0;
+    }
+    stbi_image_free(img);
+    if (!ret) {
+        char diffName[512];
+        const char* dot = strrchr(name, '.');
+        int stem = dot ? (int)(dot - name) : (int)strlen(name);
+        snprintf(diffName, sizeof(diffName), "%.*s-diff%s", stem, name, dot ? dot : "");
+        printf("Saving screenshot diff to '%s'\n", diffName);
+        stbi_write_png(diffName, w, h, 4, diff, w * 4);
+    }
+    free(diff);
+    return ret;
+}
+
+int saveScreenShotRGBA(int w, int h, int premult, unsigned char* image, const char* name, int compare)
+{
+    char fileName[512];
+    int ret = 1;
     if (premult)
         unpremultiplyAlpha(image, w, h, w * 4);
     else
         setAlpha(image, w, h, w * 4, 255);
-    flipHorizontal(image, w, h, w * 4);
-    stbi_write_png(name, w, h, 4, image, w * 4);
-    free(image);
+    snprintf(fileName, sizeof(fileName), "%s", name);
+    if (compare) {
+        ret = comparePreviousScreenShot(w, h, premult, image, name);
+        if (!ret) {
+            const char* dot = strrchr(name, '.');
+            int stem = dot ? (int)(dot - name) : (int)strlen(name);
+            snprintf(fileName, sizeof(fileName), "%.*s-failed%s", stem, name, dot ? dot : "");
+        }
+    }
+    printf("Saving screenshot to '%s'\n", fileName);
+    stbi_write_png(fileName, w, h, 4, image, w * 4);
+    return ret;
 }
+
+#ifndef NANOVG_VULKAN
+int saveScreenShot(int w, int h, int premult, const char* name, int compare)
+{
+    int ret;
+    unsigned char* image = (unsigned char*)malloc(w * h * 4);
+    if (image == NULL) return 0;
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, image);
+    flipHorizontal(image, w, h, w * 4);
+    ret = saveScreenShotRGBA(w, h, premult, image, name, compare);
+    free(image);
+    return ret;
+}
+#endif
 
 #ifdef _MSC_VER
 #pragma warning(pop)

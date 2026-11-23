@@ -191,6 +191,23 @@ inline constexpr int operator&(int a, ImageFlags b) noexcept
     return a & to_underlying(b);
 }
 
+// Flags accepted by the backend constructors (nvg::createGL, nvg::createVk).
+enum class CreateFlags : int {
+    Antialias = 1 << 0,       // Geometry based anti-aliasing (may not be needed when using MSAA).
+    StencilStrokes = 1 << 1,  // Render strokes through the stencil buffer so overlapping parts blend only once.
+    Debug = 1 << 2,           // Extra error checking in the backend.
+};
+
+inline constexpr CreateFlags operator|(CreateFlags a, CreateFlags b) noexcept
+{
+    return static_cast<CreateFlags>(to_underlying(a) | to_underlying(b));
+}
+
+inline constexpr int operator&(int a, CreateFlags b) noexcept
+{
+    return a & to_underlying(b);
+}
+
 // Internal Render API
 //
 enum class Texture : int {

@@ -3,11 +3,18 @@
 #ifdef NANOVG_GLEW
 #include <GL/glew.h>
 #endif
+#ifdef NANOVG_VULKAN
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+#include "nvg_window_vk.hpp"
+#else
 #define GLFW_INCLUDE_GLEXT
 #include <GLFW/glfw3.h>
+#endif
 
 struct NvgWindow {
     GLFWwindow* glfw;
+    bool hasGLContext;
     NvgwinKeyFn key_cb;
     void* key_user;
 };
@@ -70,12 +77,16 @@ NvgWindow* nvgwin_create(int w, int h, const char* title, NvgwinProfile profile,
             glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
             break;
+        case NVGWIN_PROFILE_VULKAN:
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            break;
     }
 
     GLFWwindow* gw = glfwCreateWindow(w, h, title, NULL, NULL);
     if (!gw) return nullptr;
     NvgWindow* nw = new NvgWindow{};
     nw->glfw = gw;
+    nw->hasGLContext = profile != NVGWIN_PROFILE_VULKAN;
     nw->key_cb = nullptr;
     nw->key_user = nullptr;
     glfwSetWindowUserPointer(gw, nw);
@@ -91,12 +102,12 @@ void nvgwin_destroy(NvgWindow* win)
 
 void nvgwin_make_current(NvgWindow* win)
 {
-    glfwMakeContextCurrent(win->glfw);
+    if (win->hasGLContext) glfwMakeContextCurrent(win->glfw);
 }
 
 void nvgwin_swap_buffers(NvgWindow* win)
 {
-    glfwSwapBuffers(win->glfw);
+    if (win->hasGLContext) glfwSwapBuffers(win->glfw);
 }
 
 void nvgwin_poll_events(void)
@@ -150,3 +161,21 @@ void nvgwin_set_key_callback(NvgWindow* win, NvgwinKeyFn fn, void* user)
     win->key_user = user;
     glfwSetKeyCallback(win->glfw, glfw_key_cb);
 }
+
+#ifdef NANOVG_VULKAN
+PFN_vkGetInstanceProcAddr nvgwin_vk_get_instance_proc_addr(void)
+{
+    if (!glfwVulkanSupported()) return nullptr;
+    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(glfwGetInstanceProcAddress(nullptr, "vkGetInstanceProcAddr"));
+}
+
+const char* const* nvgwin_vk_instance_extensions(uint32_t* count)
+{
+    return glfwGetRequiredInstanceExtensions(count);
+}
+
+int nvgwin_vk_create_surface(NvgWindow* win, VkInstance instance, VkSurfaceKHR* surface)
+{
+    return glfwCreateWindowSurface(instance, win->glfw, nullptr, surface) == VK_SUCCESS ? 0 : -1;
+}
+#endif
