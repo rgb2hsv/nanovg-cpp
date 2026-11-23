@@ -69,6 +69,11 @@ namespace nvg
 
 Context::Context(const Params& params) : mImpl(std::make_unique<ContextImpl>(params))
 {
+    // Like nvgCreateInternal in C NanoVG: start with a valid default state so text can be
+    // measured before the first beginFrame(). Otherwise the state has a zero transform,
+    // font scale is 0 and nvgTextBounds returns NaN.
+    save();
+    reset();
 }
 
 Context::~Context() = default;
