@@ -38,6 +38,9 @@ enum class PathCommand : int {
     BezierTo = 2,
     Close = 3,
     Winding = 4,
+    // A cubic like BezierTo that continues the previous segment instead of starting a new one: arcs and
+    // ellipses are built from several cubics but count as one segment (one vertex) for stroke markers.
+    BezierContinue = 5,
 };
 
 enum class PointFlags : unsigned char {
@@ -78,6 +81,10 @@ struct State {
     int lineJoin;
     int lineCap;
     int lineStyle;
+    std::array<float, maxStrokeDashes * 2> dashes{};  // normalized SVG dash array (even length), in local units
+    int ndashes = 0;                                   // 0 = solid
+    float dashOffset = 0.0f;
+    std::array<Marker, 3> markers{};  // start, mid, end
     float alpha;
     std::array<float, 6> xform;
     Scissor scissor;
@@ -85,6 +92,10 @@ struct State {
     float letterSpacing;
     float lineHeight;
     float fontBlur;
+    float textOuterShadowX = 0.0f, textOuterShadowY = 0.0f, textOuterShadowBlur = 0.0f;
+    Color textOuterShadowColor{};  // alpha 0 = no shadow
+    float textInnerShadowX = 0.0f, textInnerShadowY = 0.0f, textInnerShadowBlur = 0.0f;
+    Color textInnerShadowColor{};  // alpha 0 = no shadow
     float fontDilate;
     int textAlign;
     int fontId;
@@ -135,6 +146,17 @@ protected:
     ScissorBounds scissor;
     std::vector<State> states;
     std::shared_ptr<PathCache> cache;
+    // Alpha textures holding text inner-shadow masks, one per inner-shadowed text() call in a frame.
+    // They are reused from frame to frame (slots restart at beginFrame), so a mask stays intact until
+    // the frame that draws it has been flushed.
+    struct ShadowImage {
+        int image = 0;
+        int width = 0, height = 0;
+    };
+    std::vector<ShadowImage> shadowImages;
+    size_t shadowImageIdx = 0;
+    std::vector<float> shadowCoverage, shadowBlur;  // scratch buffers for building a mask
+    std::vector<unsigned char> shadowPixels;
 
     State& topState();
     const State& topState() const;
@@ -157,15 +179,22 @@ protected:
         while (i < nvals) {
             const int cmd = static_cast<int>(v[i]);
             switch (cmd) {
+                // Each case checks that its operands are present: a truncated command list stops
+                // here instead of reading past the end (this also lets the compiler prove the reads
+                // are in bounds when a short fixed-size command array is inlined).
                 case static_cast<int>(PathCommand::MoveTo):
+                    if (i + 3 > nvals) return;
                     transformPoint(v[i + 1], v[i + 2], st.xform.data(), v[i + 1], v[i + 2]);
                     i += 3;
                     break;
                 case static_cast<int>(PathCommand::LineTo):
+                    if (i + 3 > nvals) return;
                     transformPoint(v[i + 1], v[i + 2], st.xform.data(), v[i + 1], v[i + 2]);
                     i += 3;
                     break;
                 case static_cast<int>(PathCommand::BezierTo):
+                case static_cast<int>(PathCommand::BezierContinue):
+                    if (i + 7 > nvals) return;
                     transformPoint(v[i + 1], v[i + 2], st.xform.data(), v[i + 1], v[i + 2]);
                     transformPoint(v[i + 3], v[i + 4], st.xform.data(), v[i + 3], v[i + 4]);
                     transformPoint(v[i + 5], v[i + 6], st.xform.data(), v[i + 5], v[i + 6]);
@@ -194,6 +223,8 @@ protected:
     void prepareTempVerts(int nverts);
     void tesselateBezier(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4, int level, int type);
     void flattenPaths();
+    void measurePaths();
+    void dashPaths(const float* dashes, int ndashes, float offset, int lineCap);
     void calculateJoins(float w, int lineJoin, float miterLimit);
     int expandStroke(float w, float fringe, int lineCap, int lineJoin, int lineStyle, float miterLimit);
     int expandFill(float w, int lineJoin, float miterLimit);

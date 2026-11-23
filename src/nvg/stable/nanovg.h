@@ -160,6 +160,45 @@ enum NVGpointMode {
     NVG_POINTS_POLYGON = 2,  // The points are drawn as one connected, open polyline.
 };
 
+// Element drawn by nvgDrawGrid. Mirrors nvg::GridShape.
+enum NVGgridShape {
+    NVG_GRID_LINES = 0,    // The (cols + 1) vertical and (rows + 1) horizontal lines bounding the cells; size is the line thickness.
+    NVG_GRID_CIRCLES = 1,  // One circle centered in each cell; size is the radius.
+    NVG_GRID_SQUARES = 2,  // One axis-aligned square centered in each cell; size is the half side length (a "radius").
+};
+
+// Built-in stroke marker shapes. Mirrors nvg::MarkerShape: each is defined in a unit box centered on the
+// vertex, +x along the marker's orientation, scaled by NVGmarker.size.
+enum NVGmarkerShape {
+    NVG_MARKER_NONE = 0,
+    NVG_MARKER_ARROW = 1,    // Triangle from x = -0.5 (base, 1 unit wide) to x = +0.5 (tip).
+    NVG_MARKER_CIRCLE = 2,   // Circle of diameter 1.
+    NVG_MARKER_SQUARE = 3,   // Square of side 1.
+    NVG_MARKER_DIAMOND = 4,  // Square of diagonal 1, rotated 45 degrees.
+    NVG_MARKER_BAR = 5,      // Tick across the path: 1 unit long and one stroke width thick.
+    NVG_MARKER_CUSTOM = 6,   // Drawn by NVGmarker.draw.
+};
+
+// How a marker is rotated at its vertex, like the SVG marker orient attribute. Mirrors nvg::MarkerOrient.
+enum NVGmarkerOrient {
+    NVG_MARKER_ORIENT_AUTO = 0,                // Along the path (bisector of the incoming and outgoing segments).
+    NVG_MARKER_ORIENT_AUTO_START_REVERSE = 1,  // Like AUTO, but the start marker points backwards.
+    NVG_MARKER_ORIENT_FIXED = 2,               // NVGmarker.angle radians, in the path's local coordinates.
+};
+
+// A stroke marker (SVG marker-start / marker-mid / marker-end, markerUnits="strokeWidth"). The marker
+// frame has its origin on the vertex and +x along the orientation, with 1 unit = size x the stroke width.
+// For NVG_MARKER_CUSTOM, draw(ctx, uptr) is called in that frame with the fill paint set to the stroke
+// paint; the caller's path and state are restored afterwards. Use nvgMarker() for the defaults.
+typedef struct NVGmarker {
+    int shape;    // NVGmarkerShape
+    float size;   // default 3
+    int orient;   // NVGmarkerOrient
+    float angle;  // for NVG_MARKER_ORIENT_FIXED
+    void (*draw)(NVGcontext* ctx, void* uptr);
+    void* uptr;
+} NVGmarker;
+
 // Flags accepted by the backend constructors (nvgCreateGL*, nvgCreateVk). Mirrors nvg::CreateFlags.
 enum NVGcreateFlags {
     // Flag indicating if geometry based anti-aliasing is used (may not be needed when using MSAA).
@@ -302,6 +341,33 @@ void nvgStrokeWidth(NVGcontext* ctx, float size);
 // Sets how line is drawn.
 // Can be one of NVG_LINE_SOLID (default), NVG_LINE_GLOW, NVG_LINE_DASHED, NVG LINE_DOTTED
 void nvgLineStyle(NVGcontext* ctx, int lineStyle);
+
+#define NVG_MAX_STROKE_DASHES 16
+
+// SVG-style dashing for every stroke (stroke-dasharray). dashes alternates dash and gap lengths in local
+// units, starting with a dash; an odd count is repeated to make it even, as in SVG. NULL, count <= 0, a
+// negative value or an all-zero array turns dashing off. Values past NVG_MAX_STROKE_DASHES are ignored.
+// The pattern restarts on each subpath and line caps apply to both ends of every dash.
+void nvgStrokeDashArray(NVGcontext* ctx, const float* dashes, int count);
+
+// Same as nvgStrokeDashArray, parsed from an SVG stroke-dasharray value such as "6 3", "4,2,1,2" or "none".
+void nvgStrokeDashArrayString(NVGcontext* ctx, const char* dashArray);
+
+// Shifts the start of the dash pattern along each subpath, like SVG stroke-dashoffset (may be negative).
+void nvgStrokeDashOffset(NVGcontext* ctx, float offset);
+
+// A marker of the given NVGmarkerShape and size with automatic orientation and no custom callback.
+NVGmarker nvgMarker(int shape, float size);
+
+// Markers drawn by every stroke after the stroke itself, at the path's first vertex (start), last vertex
+// (end) and every vertex in between (mid). Vertices are the end points of path commands (an arc or ellipse
+// is one segment; zero-length segments add none). Pass nvgMarker(NVG_MARKER_NONE, 0) to remove one.
+// nvgDrawArrow and nvgDrawGrid do not draw markers. See nvg::Context::markerStart.
+void nvgMarkerStart(NVGcontext* ctx, NVGmarker marker);
+void nvgMarkerMid(NVGcontext* ctx, NVGmarker marker);
+void nvgMarkerEnd(NVGcontext* ctx, NVGmarker marker);
+// Sets start, mid and end at once, like the SVG marker shorthand.
+void nvgMarkers(NVGcontext* ctx, NVGmarker marker);
 
 // Sets how the end of the line (cap) is drawn,
 // Can be one of: NVG_BUTT (default), NVG_ROUND, NVG_SQUARE.
@@ -525,6 +591,15 @@ void nvgPathWinding(NVGcontext* ctx, int dir);
 // Angles are specified in radians.
 void nvgArc(NVGcontext* ctx, float cx, float cy, float r, float a0, float a1, int dir);
 
+// Elliptical arc from its center: radii rx, ry, the ellipse rotated by rotation radians, from parametric
+// angle a0 to a1 in direction dir (NVG_CCW or NVG_CW). Connects to the current path like nvgArc.
+void nvgEllipticalArc(NVGcontext* ctx, float cx, float cy, float rx, float ry, float rotation, float a0, float a1, int dir);
+
+// Elliptical arc from the current point to x,y with the parameters of the SVG path "A" command (the
+// rotation is in radians). largeArc and sweep are booleans; sweep = clockwise on a y-down screen. Radii
+// too small to reach the endpoint are scaled up, and a zero radius draws a line, as in SVG.
+void nvgEllipticalArcTo(NVGcontext* ctx, float rx, float ry, float xAxisRotation, int largeArc, int sweep, float x, float y);
+
 // Creates new rectangle shaped sub-path.
 void nvgRect(NVGcontext* ctx, float x, float y, float w, float h);
 
@@ -533,6 +608,13 @@ void nvgRoundedRect(NVGcontext* ctx, float x, float y, float w, float h, float r
 
 // Creates new rounded rectangle shaped sub-path with varying radii for each corner.
 void nvgRoundedRectVarying(NVGcontext* ctx, float x, float y, float w, float h, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft);
+
+// Rounded rectangle with elliptical corners: rx horizontal and ry vertical radius (SVG <rect rx ry>).
+void nvgRoundedRectElliptic(NVGcontext* ctx, float x, float y, float w, float h, float rx, float ry);
+
+// Per-corner elliptical radii (horizontal, vertical), clockwise from the top left.
+void nvgRoundedRectEllipticVarying(NVGcontext* ctx, float x, float y, float w, float h, float rxTopLeft, float ryTopLeft, float rxTopRight, float ryTopRight, float rxBottomRight,
+                                   float ryBottomRight, float rxBottomLeft, float ryBottomLeft);
 
 // Creates new ellipse shaped sub-path.
 void nvgEllipse(NVGcontext* ctx, float cx, float cy, float rx, float ry);
@@ -568,10 +650,22 @@ void nvgDrawLine(NVGcontext* ctx, float x0, float y0, float x1, float y1);
 void nvgDrawPoints(NVGcontext* ctx, int mode, const float* pts, int count);
 void nvgDrawPoint(NVGcontext* ctx, float x, float y);
 
+// Arrow from the tail (x0, y0) to the tip (x1, y1): a stalk of stalkWidth topped by a triangular head
+// headLength long (along the arrow) and headWidth wide (across it). headLength is clamped to the
+// arrow's length and headWidth to at least stalkWidth.
+void nvgDrawArrow(NVGcontext* ctx, float x0, float y0, float x1, float y1, float stalkWidth, float headWidth, float headLength, int style);
+
+// A cols x rows grid laid out over r. Drawn as one shader-evaluated quad when the backend implements
+// NVGparams.renderShape (see nvg::Context::drawGrid for when it falls back to tessellated geometry). shape is an NVGgridShape; size is the line
+// thickness for NVG_GRID_LINES and the radius / half side for NVG_GRID_CIRCLES / NVG_GRID_SQUARES.
+void nvgDrawGrid(NVGcontext* ctx, NVGrect r, int cols, int rows, int shape, float size, int style);
+
 // Closed polygon through count (x, y) pairs.
 void nvgDrawPolygon(NVGcontext* ctx, const float* pts, int count, int style);
 void nvgDrawRect(NVGcontext* ctx, NVGrect r, int style);
 void nvgDrawRoundRect(NVGcontext* ctx, NVGrect r, float radius, int style);
+// Rounded rect with elliptical corners (rx horizontal, ry vertical).
+void nvgDrawRoundRectElliptic(NVGcontext* ctx, NVGrect r, float rx, float ry, int style);
 void nvgDrawRoundRectVarying(NVGcontext* ctx, NVGrect r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, int style);
 
 // Fills the area between two rounded rects (outer minus inner), like SkCanvas::drawDRRect.
@@ -667,6 +761,16 @@ void nvgFontSize(NVGcontext* ctx, float size);
 
 // Sets the blur of current text style.
 void nvgFontBlur(NVGcontext* ctx, float blur);
+
+// Soft outer shadow under all text, like CSS text-shadow: offset and blur in local units, and the
+// shadow color (zero alpha = off, the default). The blur adds to the font blur and is capped at 20
+// device pixels. See nvg::Context::textOuterShadow.
+void nvgTextOuterShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color);
+
+// Soft inner shadow over all text: color inside the glyphs wherever an offset, blurred copy of them does
+// not cover them (offset down-right shades the top-left inner edges). Same units as nvgTextOuterShadow;
+// zero alpha = off. The mask is built on the CPU and drawn as one quad. See nvg::Context::textInnerShadow.
+void nvgTextInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color);
 
 // Sets the dilation of current text style.
 void nvgFontDilate(NVGcontext* ctx, float dilate);
@@ -775,6 +879,25 @@ struct NVGpath {
 };
 typedef struct NVGpath NVGpath;
 
+// Analytic shape passed to NVGparams.renderShape. Mirrors nvg::Shape; see nanovg.hpp for the meaning
+// of params per type.
+enum NVGshapeType {
+    NVG_SHAPE_NONE = 0,
+    NVG_SHAPE_GRID_LINES = 1,
+    NVG_SHAPE_GRID_CIRCLES = 2,
+    NVG_SHAPE_GRID_SQUARES = 3,
+    NVG_SHAPE_ARROW = 4,
+};
+
+struct NVGshape {
+    int type;
+    float strokeHalfWidth;
+    float aaWidth;
+    float xform[6];
+    float params[8];
+};
+typedef struct NVGshape NVGshape;
+
 struct NVGparams {
     void* userPtr;
     int edgeAntiAlias;
@@ -792,6 +915,9 @@ struct NVGparams {
                          int npaths);
     void (*renderTriangles)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, const NVGvertex* verts, int nverts, float fringe);
     void (*renderDelete)(void* uptr);
+    // Optional (may be NULL): draws verts (device-space triangles) with paint, scaled by the per-pixel
+    // coverage of shape. nvgDrawGrid / nvgDrawArrow fall back to tessellated geometry without it.
+    void (*renderShape)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, const NVGshape* shape, const NVGvertex* verts, int nverts);
 };
 typedef struct NVGparams NVGparams;
 

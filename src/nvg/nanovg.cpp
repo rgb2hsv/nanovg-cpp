@@ -33,7 +33,9 @@
 #include <span>
 #include <bit>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 
 #define Expects(condition)                                                                                     \
@@ -106,6 +108,8 @@ ContextImpl::~ContextImpl()
             fontImages[i] = 0;
         }
     }
+    for (ShadowImage& s : shadowImages)
+        if (s.image != 0) params.renderDeleteTexture(params.userPtr, s.image);
 
     if (params.renderDelete != nullptr) params.renderDelete(params.userPtr);
 }
@@ -348,6 +352,7 @@ void Context::beginFrame(float windowWidth, float windowHeight, float devicePixe
 
     mImpl->params.renderViewport(mImpl->params.userPtr, windowWidth, windowHeight, devicePixelRatio);
 
+    mImpl->shadowImageIdx = 0;
     mImpl->drawCallCount = 0;
     mImpl->fillTriCount = 0;
     mImpl->strokeTriCount = 0;
@@ -414,6 +419,9 @@ void Context::reset()
     state.lineCap = static_cast<int>(LineCap::Butt);
     state.lineJoin = static_cast<int>(LineCap::Miter);
     state.lineStyle = static_cast<int>(LineStyle::Solid);
+    state.ndashes = 0;
+    state.dashOffset = 0.0f;
+    state.markers = {};
     state.alpha = 1.0f;
     transformIdentity(state.xform.data());
 
@@ -424,6 +432,10 @@ void Context::reset()
     state.letterSpacing = 0.0f;
     state.lineHeight = 1.0f;
     state.fontBlur = 0.0f;
+    state.textOuterShadowX = state.textOuterShadowY = state.textOuterShadowBlur = 0.0f;
+    state.textOuterShadowColor = Color{};
+    state.textInnerShadowX = state.textInnerShadowY = state.textInnerShadowBlur = 0.0f;
+    state.textInnerShadowColor = Color{};
     state.fontDilate = 0.0f;
     state.textAlign = static_cast<int>(Align::Left | Align::Baseline);
     state.fontId = 0;
@@ -480,6 +492,83 @@ void Context::lineStyle(int lineStyle)
 {
     State& state = mImpl->topState();
     state.lineStyle = lineStyle;
+}
+
+void Context::strokeDashArray(const float* dashes, int count)
+{
+    State& state = mImpl->topState();
+    state.ndashes = 0;
+    if (dashes == nullptr || count <= 0) return;
+    count = std::min(count, maxStrokeDashes);
+    float total = 0.0f;
+    for (int i = 0; i < count; i++) {
+        if (!std::isfinite(dashes[i]) || dashes[i] < 0.0f) return;  // invalid, as in SVG: render solid
+        total += dashes[i];
+    }
+    if (!(total > 0.0f)) return;
+    // An odd-length list is repeated to make it even, so dashes and gaps keep alternating.
+    const int n = (count % 2) ? count * 2 : count;
+    for (int i = 0; i < n; i++) state.dashes[static_cast<size_t>(i)] = dashes[i % count];
+    state.ndashes = n;
+}
+
+void Context::strokeDashArray(const char* dashArray)
+{
+    std::array<float, maxStrokeDashes> values{};
+    int count = 0;
+    const char* p = dashArray;
+    auto skipSeparators = [&] {
+        while (p != nullptr && (*p == ',' || std::isspace(static_cast<unsigned char>(*p)))) p++;
+    };
+    skipSeparators();
+    if (p == nullptr || *p == '\0' || std::strncmp(p, "none", 4) == 0) {
+        strokeDashArray(nullptr, 0);
+        return;
+    }
+    while (*p != '\0') {
+        char* end = nullptr;
+        const float v = std::strtof(p, &end);
+        if (end == p) {
+            strokeDashArray(nullptr, 0);  // not a number: invalid value, render solid
+            return;
+        }
+        p = end;
+        if (p[0] == 'p' && p[1] == 'x') p += 2;
+        if (*p != '\0' && *p != ',' && !std::isspace(static_cast<unsigned char>(*p))) {
+            strokeDashArray(nullptr, 0);
+            return;
+        }
+        if (count < maxStrokeDashes) values[static_cast<size_t>(count++)] = v;
+        skipSeparators();
+    }
+    strokeDashArray(values.data(), count);
+}
+
+void Context::strokeDashOffset(float offset)
+{
+    State& state = mImpl->topState();
+    state.dashOffset = std::isfinite(offset) ? offset : 0.0f;
+}
+
+void Context::markerStart(const Marker& marker)
+{
+    mImpl->topState().markers[0] = marker;
+}
+
+void Context::markerMid(const Marker& marker)
+{
+    mImpl->topState().markers[1] = marker;
+}
+
+void Context::markerEnd(const Marker& marker)
+{
+    mImpl->topState().markers[2] = marker;
+}
+
+void Context::markers(const Marker& marker)
+{
+    auto& m = mImpl->topState().markers;
+    m[0] = m[1] = m[2] = marker;
 }
 
 void Context::lineCap(int cap)
@@ -920,19 +1009,13 @@ void Context::pathWinding(int dir)
     mImpl->appendCommands(vals);
 }
 
-void Context::arc(float cx, float cy, float r, float a0, float a1, int dir)
+namespace
 {
-    const float pi = (float)M_PI;
-    const float twoPi = pi * 2.0f;
-    float a = 0, da = 0, hda = 0, kappa = 0;
-    float dx = 0, dy = 0, x = 0, y = 0, tanx = 0, tany = 0;
-    float px = 0, py = 0, ptanx = 0, ptany = 0;
-    std::array<float, 3 + 5 * 7 + 100> vals{};
-    int i, ndivs, nvals;
-    int move = !mImpl->commands.empty() ? static_cast<int>(PathCommand::LineTo) : static_cast<int>(PathCommand::MoveTo);
-
-    // Clamp angles
-    da = a1 - a0;
+// Turns [a0, a1] into a signed sweep in direction dir, as arc() always has: at most one full turn.
+float clampSweep(float a0, float a1, int dir)
+{
+    const float twoPi = (float)M_PI * 2.0f;
+    float da = a1 - a0;
     if (dir == static_cast<int>(Winding::CW)) {
         if (detail::absf(da) >= twoPi) {
             da = twoPi;
@@ -946,30 +1029,43 @@ void Context::arc(float cx, float cy, float r, float a0, float a1, int dir)
             while (da > 0.0f) da -= twoPi;
         }
     }
+    return da;
+}
+}  // namespace
 
-    // Split arc into max 90 degree segments.
-    ndivs = detail::maxi(1, detail::mini((int)(detail::absf(da) / (pi * 0.5f) + 0.5f), 5));
-    hda = (da / (float)ndivs) / 2.0f;
-    kappa = detail::absf(4.0f / 3.0f * (1.0f - cosf(hda)) / sinf(hda));
+void Context::appendEllipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float da, bool connect)
+{
+    const float pi = (float)M_PI;
+    const float cr = cosf(rotation), sr = sinf(rotation);
+    std::array<float, 3 + 5 * 7> vals{};
+    size_t nvals = 0;
 
-    if (dir == static_cast<int>(Winding::CCW)) kappa = -kappa;
+    // Split the arc into max 90 degree segments.
+    const int ndivs = detail::maxi(1, detail::mini((int)(detail::absf(da) / (pi * 0.5f) + 0.5f), 5));
+    const float hda = (da / (float)ndivs) / 2.0f;
+    float kappa = detail::absf(hda) > 1e-6f ? detail::absf(4.0f / 3.0f * (1.0f - cosf(hda)) / sinf(hda)) : 0.0f;
+    if (da < 0.0f) kappa = -kappa;
 
-    nvals = 0;
-    for (i = 0; i <= ndivs; i++) {
-        a = a0 + da * (i / (float)ndivs);
-        dx = cosf(a);
-        dy = sinf(a);
-        x = cx + dx * r;
-        y = cy + dy * r;
-        tanx = -dy * r * kappa;
-        tany = dx * r * kappa;
+    float px = 0, py = 0, ptanx = 0, ptany = 0;
+    for (int i = 0; i <= ndivs; i++) {
+        const float a = a0 + da * (i / (float)ndivs);
+        const float ca = cosf(a), sa = sinf(a);
+        // Point and (kappa-scaled) tangent on the axis-aligned ellipse, then rotated.
+        const float lx = ca * rx, ly = sa * ry;
+        const float ltx = -sa * rx * kappa, lty = ca * ry * kappa;
+        const float x = cx + cr * lx - sr * ly, y = cy + sr * lx + cr * ly;
+        const float tanx = cr * ltx - sr * lty, tany = sr * ltx + cr * lty;
 
         if (i == 0) {
-            vals[(size_t)nvals++] = (float)move;
-            vals[nvals++] = x;
-            vals[nvals++] = y;
+            if (connect) {
+                const PathCommand move = !mImpl->commands.empty() ? PathCommand::LineTo : PathCommand::MoveTo;
+                vals[nvals++] = static_cast<float>(to_underlying(move));
+                vals[nvals++] = x;
+                vals[nvals++] = y;
+            }
         } else {
-            vals[nvals++] = static_cast<float>(to_underlying(PathCommand::BezierTo));
+            // Later pieces continue the first: the arc is one segment for stroke markers.
+            vals[nvals++] = static_cast<float>(to_underlying(i == 1 ? PathCommand::BezierTo : PathCommand::BezierContinue));
             vals[nvals++] = px + ptanx;
             vals[nvals++] = py + ptany;
             vals[nvals++] = x - tanx;
@@ -983,8 +1079,69 @@ void Context::arc(float cx, float cy, float r, float a0, float a1, int dir)
         ptany = tany;
     }
 
-    std::span<float> span(vals.data(), static_cast<size_t>(nvals));
+    if (nvals == 0) return;
+    std::span<float> span(vals.data(), nvals);
     mImpl->appendCommands(span);
+}
+
+void Context::arc(float cx, float cy, float r, float a0, float a1, int dir)
+{
+    appendEllipticalArc(cx, cy, r, r, 0.0f, a0, clampSweep(a0, a1, dir), true);
+}
+
+void Context::ellipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float a1, int dir)
+{
+    appendEllipticalArc(cx, cy, rx, ry, rotation, a0, clampSweep(a0, a1, dir), true);
+}
+
+void Context::ellipticalArcTo(float rx, float ry, float xAxisRotation, bool largeArc, bool sweep, float x, float y)
+{
+    if (mImpl->commands.empty()) {
+        moveTo(x, y);
+        return;
+    }
+    // The current point (commandx / commandy) is kept in local coordinates.
+    const float x1 = mImpl->commandx, y1 = mImpl->commandy;
+    // Same endpoints: SVG omits the arc. distTol is in device pixels, so scale it to local units.
+    const float scale = detail::getAverageScale(mImpl->topState().xform.data());
+    if (detail::ptEquals(x1, y1, x, y, scale > 0.0f ? mImpl->distTol / scale : mImpl->distTol)) return;
+    rx = detail::absf(rx);
+    ry = detail::absf(ry);
+    if (!(rx > 0.0f) || !(ry > 0.0f) || !std::isfinite(rx) || !std::isfinite(ry)) {
+        lineTo(x, y);
+        return;
+    }
+
+    // Endpoint to center parameterization (SVG 1.1 implementation notes, F.6.5 and F.6.6).
+    const double cphi = cos((double)xAxisRotation), sphi = sin((double)xAxisRotation);
+    const double hx = (x1 - (double)x) * 0.5, hy = (y1 - (double)y) * 0.5;
+    const double x1p = cphi * hx + sphi * hy;
+    const double y1p = -sphi * hx + cphi * hy;
+    double rxd = rx, ryd = ry;
+    const double lambda = (x1p * x1p) / (rxd * rxd) + (y1p * y1p) / (ryd * ryd);
+    if (lambda > 1.0) {
+        const double k = sqrt(lambda);
+        rxd *= k;
+        ryd *= k;
+    }
+    const double rx2 = rxd * rxd, ry2 = ryd * ryd;
+    const double den = rx2 * y1p * y1p + ry2 * x1p * x1p;
+    double coef = den > 0.0 ? sqrt(std::max(0.0, (rx2 * ry2 - den) / den)) : 0.0;
+    if (largeArc == sweep) coef = -coef;
+    const double cxp = coef * rxd * y1p / ryd;
+    const double cyp = -coef * ryd * x1p / rxd;
+    const double cx = cphi * cxp - sphi * cyp + (x1 + (double)x) * 0.5;
+    const double cy = sphi * cxp + cphi * cyp + (y1 + (double)y) * 0.5;
+
+    auto angle = [](double ux, double uy, double vx, double vy) { return atan2(ux * vy - uy * vx, ux * vx + uy * vy); };
+    const double ux = (x1p - cxp) / rxd, uy = (y1p - cyp) / ryd;
+    const double vx = (-x1p - cxp) / rxd, vy = (-y1p - cyp) / ryd;
+    const double theta1 = angle(1.0, 0.0, ux, uy);
+    double dtheta = angle(ux, uy, vx, vy);
+    if (!sweep && dtheta > 0.0) dtheta -= 2.0 * M_PI;
+    if (sweep && dtheta < 0.0) dtheta += 2.0 * M_PI;
+
+    appendEllipticalArc((float)cx, (float)cy, (float)rxd, (float)ryd, xAxisRotation, (float)theta1, (float)dtheta, false);
 }
 
 void Context::rect(float x, float y, float w, float h)
@@ -1000,18 +1157,35 @@ void Context::roundedRect(float x, float y, float w, float h, float r)
     roundedRectVarying(x, y, w, h, r, r, r, r);
 }
 
+void Context::roundedRect(float x, float y, float w, float h, float rx, float ry)
+{
+    roundedRectVarying(x, y, w, h, rx, ry, rx, ry, rx, ry, rx, ry);
+}
+
 void Context::roundedRectVarying(float x, float y, float w, float h, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft)
 {
-    if (radTopLeft < 0.1f && radTopRight < 0.1f && radBottomRight < 0.1f && radBottomLeft < 0.1f) {
+    roundedRectVarying(x, y, w, h, radTopLeft, radTopLeft, radTopRight, radTopRight, radBottomRight, radBottomRight, radBottomLeft, radBottomLeft);
+}
+
+void Context::roundedRectVarying(float x, float y, float w, float h, float rxTopLeft, float ryTopLeft, float rxTopRight, float ryTopRight, float rxBottomRight, float ryBottomRight,
+                                 float rxBottomLeft, float ryBottomLeft)
+{
+    // A corner is square unless both of its radii are at least 0.1 (as for circular corners).
+    auto square = [](float rx, float ry) { return !(rx >= 0.1f) || !(ry >= 0.1f); };
+    const bool sqTL = square(rxTopLeft, ryTopLeft), sqTR = square(rxTopRight, ryTopRight);
+    const bool sqBR = square(rxBottomRight, ryBottomRight), sqBL = square(rxBottomLeft, ryBottomLeft);
+    if (sqTL && sqTR && sqBR && sqBL) {
         rect(x, y, w, h);
         return;
     } else {
         float halfw = detail::absf(w) * 0.5f;
         float halfh = detail::absf(h) * 0.5f;
-        float rxBL = detail::minf(radBottomLeft, halfw) * detail::signf(w), ryBL = detail::minf(radBottomLeft, halfh) * detail::signf(h);
-        float rxBR = detail::minf(radBottomRight, halfw) * detail::signf(w), ryBR = detail::minf(radBottomRight, halfh) * detail::signf(h);
-        float rxTR = detail::minf(radTopRight, halfw) * detail::signf(w), ryTR = detail::minf(radTopRight, halfh) * detail::signf(h);
-        float rxTL = detail::minf(radTopLeft, halfw) * detail::signf(w), ryTL = detail::minf(radTopLeft, halfh) * detail::signf(h);
+        auto cx = [&](bool sq, float r) { return sq ? 0.0f : detail::minf(r, halfw) * detail::signf(w); };
+        auto cy = [&](bool sq, float r) { return sq ? 0.0f : detail::minf(r, halfh) * detail::signf(h); };
+        float rxBL = cx(sqBL, rxBottomLeft), ryBL = cy(sqBL, ryBottomLeft);
+        float rxBR = cx(sqBR, rxBottomRight), ryBR = cy(sqBR, ryBottomRight);
+        float rxTR = cx(sqTR, rxTopRight), ryTR = cy(sqTR, ryTopRight);
+        float rxTL = cx(sqTL, rxTopLeft), ryTL = cy(sqTL, ryTopLeft);
         std::array<float, 44> vals = {static_cast<float>(to_underlying(PathCommand::MoveTo)),
                                       x,
                                       y + ryTL,
@@ -1072,21 +1246,21 @@ void Context::ellipse(float cx, float cy, float rx, float ry)
                                   cy + ry,
                                   cx,
                                   cy + ry,
-                                  static_cast<float>(to_underlying(PathCommand::BezierTo)),
+                                  static_cast<float>(to_underlying(PathCommand::BezierContinue)),
                                   cx + rx * NVG_KAPPA90,
                                   cy + ry,
                                   cx + rx,
                                   cy + ry * NVG_KAPPA90,
                                   cx + rx,
                                   cy,
-                                  static_cast<float>(to_underlying(PathCommand::BezierTo)),
+                                  static_cast<float>(to_underlying(PathCommand::BezierContinue)),
                                   cx + rx,
                                   cy - ry * NVG_KAPPA90,
                                   cx + rx * NVG_KAPPA90,
                                   cy - ry,
                                   cx,
                                   cy - ry,
-                                  static_cast<float>(to_underlying(PathCommand::BezierTo)),
+                                  static_cast<float>(to_underlying(PathCommand::BezierContinue)),
                                   cx - rx * NVG_KAPPA90,
                                   cy - ry,
                                   cx - rx,
@@ -1153,6 +1327,11 @@ void Context::fill()
 
 void Context::stroke()
 {
+    strokePath(true);
+}
+
+void Context::strokePath(bool withMarkers)
+{
     State& state = mImpl->topState();
     const float scale = detail::getAverageScale(state.xform.data());
     float strokeWidth = detail::clampf(state.strokeWidth * scale, 0.0f, 1000.0f);
@@ -1175,6 +1354,15 @@ void Context::stroke()
 
     mImpl->flattenPaths();
 
+    // Dashing replaces the flattened outline in the cache with one open path per dash. Dash lengths
+    // are in local units, so scale them to device space like the stroke width.
+    const bool dashed = state.ndashes > 0;
+    if (dashed) {
+        std::array<float, maxStrokeDashes * 2> deviceDashes{};
+        for (int k = 0; k < state.ndashes; k++) deviceDashes[static_cast<size_t>(k)] = state.dashes[static_cast<size_t>(k)] * scale;
+        mImpl->dashPaths(deviceDashes.data(), state.ndashes, state.dashOffset * scale, state.lineCap);
+    }
+
     if (mImpl->params.edgeAntiAlias && state.shapeAntiAlias)
         mImpl->expandStroke(strokeWidth * 0.5f, mImpl->fringeWidth, state.lineCap, state.lineJoin, state.lineStyle, state.miterLimit);
     else
@@ -1189,6 +1377,237 @@ void Context::stroke()
         mImpl->strokeTriCount += path->nstroke - 2;
         mImpl->drawCallCount++;
     }
+    // The cache now holds dashes rather than the path's outline; make a later fill() or stroke() of
+    // the same path flatten it again.
+    if (dashed) mImpl->clearPathCache();
+    if (withMarkers) drawMarkers();
+}
+
+namespace
+{
+// A path vertex for markers, in device space, with the directions of the segments meeting there.
+struct MarkerVertex {
+    float x, y;
+    float inx = 0.0f, iny = 0.0f, outx = 0.0f, outy = 0.0f;
+    bool hasIn = false, hasOut = false;
+};
+
+// Collects the marker vertices of a command list (SVG path vertex rules, zero-length segments skipped).
+std::vector<MarkerVertex> markerVertices(const std::vector<float>& cmds, float tol)
+{
+    std::vector<MarkerVertex> vs;
+    size_t subStart = SIZE_MAX;   // vertex that started the current subpath
+    bool lastFromSegment = false;  // the last vertex ends a segment that a BezierContinue may extend
+    float curx = 0.0f, cury = 0.0f;
+    auto longer = [tol](float dx, float dy) { return dx * dx + dy * dy > tol * tol; };
+    auto moveTo = [&](float x, float y) {
+        vs.push_back(MarkerVertex{x, y});
+        subStart = vs.size() - 1;
+        lastFromSegment = false;
+        curx = x;
+        cury = y;
+    };
+    auto segment = [&](float sdx, float sdy, float edx, float edy, float x, float y, bool cont) {
+        if (vs.empty()) moveTo(curx, cury);
+        if (cont && lastFromSegment) {
+            MarkerVertex& v = vs.back();
+            v.x = x;
+            v.y = y;
+            v.inx = edx;
+            v.iny = edy;
+        } else {
+            MarkerVertex& prev = vs.back();
+            if (!prev.hasOut) {
+                prev.outx = sdx;
+                prev.outy = sdy;
+                prev.hasOut = true;
+            }
+            MarkerVertex v{x, y};
+            v.inx = edx;
+            v.iny = edy;
+            v.hasIn = true;
+            vs.push_back(v);
+            lastFromSegment = true;
+        }
+        curx = x;
+        cury = y;
+    };
+
+    size_t i = 0;
+    while (i < cmds.size()) {
+        const int cmd = static_cast<int>(cmds[i]);
+        switch (cmd) {
+            case static_cast<int>(PathCommand::MoveTo):
+                if (i + 3 > cmds.size()) return vs;
+                moveTo(cmds[i + 1], cmds[i + 2]);
+                i += 3;
+                break;
+            case static_cast<int>(PathCommand::LineTo): {
+                if (i + 3 > cmds.size()) return vs;
+                const float x = cmds[i + 1], y = cmds[i + 2];
+                const float dx = x - curx, dy = y - cury;
+                if (longer(dx, dy)) segment(dx, dy, dx, dy, x, y, false);
+                i += 3;
+                break;
+            }
+            case static_cast<int>(PathCommand::BezierTo):
+            case static_cast<int>(PathCommand::BezierContinue): {
+                if (i + 7 > cmds.size()) return vs;
+                const float c1x = cmds[i + 1], c1y = cmds[i + 2], c2x = cmds[i + 3], c2y = cmds[i + 4], x = cmds[i + 5], y = cmds[i + 6];
+                // Tangents at the ends: towards the nearest distinct control point.
+                const float s[3][2] = {{c1x - curx, c1y - cury}, {c2x - curx, c2y - cury}, {x - curx, y - cury}};
+                const float e[3][2] = {{x - c2x, y - c2y}, {x - c1x, y - c1y}, {x - curx, y - cury}};
+                int si = 0, ei = 0;
+                while (si < 3 && !longer(s[si][0], s[si][1])) si++;
+                while (ei < 3 && !longer(e[ei][0], e[ei][1])) ei++;
+                if (si < 3 && ei < 3) segment(s[si][0], s[si][1], e[ei][0], e[ei][1], x, y, cmd == static_cast<int>(PathCommand::BezierContinue));
+                i += 7;
+                break;
+            }
+            case static_cast<int>(PathCommand::Close):
+                if (subStart != SIZE_MAX) {
+                    const float sx = vs[subStart].x, sy = vs[subStart].y;
+                    const float dx = sx - curx, dy = sy - cury;
+                    if (longer(dx, dy)) segment(dx, dy, dx, dy, sx, sy, false);
+                    // A closed subpath joins up: its start vertex comes in along the closing segment,
+                    // and its closing vertex leaves along the first segment.
+                    if (vs.size() - 1 != subStart) {
+                        MarkerVertex& first = vs[subStart];
+                        MarkerVertex& last = vs.back();
+                        if (first.hasOut) {
+                            last.outx = first.outx;
+                            last.outy = first.outy;
+                            last.hasOut = true;
+                        }
+                        if (last.hasIn) {
+                            first.inx = last.inx;
+                            first.iny = last.iny;
+                            first.hasIn = true;
+                        }
+                    }
+                    curx = sx;
+                    cury = sy;
+                }
+                lastFromSegment = false;
+                i++;
+                break;
+            case static_cast<int>(PathCommand::Winding):
+                i += 2;
+                break;
+            default:
+                i++;
+        }
+    }
+    return vs;
+}
+
+// SVG orient="auto": the bisector of the incoming and outgoing directions.
+float markerAngle(const MarkerVertex& v)
+{
+    if (v.hasIn && v.hasOut) {
+        const float a1 = atan2f(v.iny, v.inx), a2 = atan2f(v.outy, v.outx);
+        float d = a2 - a1;
+        const float pi = (float)M_PI;
+        while (d > pi) d -= 2.0f * pi;
+        while (d <= -pi) d += 2.0f * pi;
+        return a1 + d * 0.5f;
+    }
+    if (v.hasIn) return atan2f(v.iny, v.inx);
+    if (v.hasOut) return atan2f(v.outy, v.outx);
+    return 0.0f;
+}
+}  // namespace
+
+void Context::drawMarkers()
+{
+    const State& state = mImpl->topState();
+    auto active = [](const Marker& m) { return m.shape != MarkerShape::None && m.size > 0.0f && (m.shape != MarkerShape::Custom || m.draw); };
+    if (!active(state.markers[0]) && !active(state.markers[1]) && !active(state.markers[2])) return;
+    const float strokeWidth = state.strokeWidth * detail::getAverageScale(state.xform.data());
+    if (!(strokeWidth > 0.0f)) return;
+
+    const std::vector<MarkerVertex> verts = markerVertices(mImpl->commands, mImpl->distTol);
+    if (verts.size() < 2) return;
+    const std::array<Marker, 3> markers = state.markers;
+    const float xformAngle = atan2f(state.xform[1], state.xform[0]);
+
+    // Marker drawing builds its own paths; keep the caller's so it can still fill() it afterwards.
+    std::vector<float> commands = mImpl->commands;
+    const float commandx = mImpl->commandx, commandy = mImpl->commandy;
+
+    save();
+    {
+        State& st = mImpl->topState();
+        st.markers = {};
+        st.ndashes = 0;
+        st.lineStyle = static_cast<int>(LineStyle::Solid);
+        // Both paints are already in device space, so the marker frame does not move them.
+        st.fill = st.stroke;
+    }
+    for (size_t i = 0; i < verts.size(); i++) {
+        const size_t role = i == 0 ? 0 : i + 1 == verts.size() ? 2 : 1;
+        const Marker& m = markers[role];
+        if (!active(m)) continue;
+        float a = 0.0f;
+        if (m.orient == MarkerOrient::Fixed) {
+            a = m.angle + xformAngle;
+        } else {
+            a = markerAngle(verts[i]);
+            if (role == 0 && m.orient == MarkerOrient::AutoStartReverse) a += (float)M_PI;
+        }
+        const float unit = m.size * strokeWidth;
+
+        save();
+        resetTransform();
+        translate(verts[i].x, verts[i].y);
+        rotate(a);
+        scale(unit, unit);
+        mImpl->topState().strokeWidth = 1.0f / m.size;
+        beginPath();
+        switch (m.shape) {
+            case MarkerShape::Arrow:
+                moveTo(0.5f, 0.0f);
+                lineTo(-0.5f, 0.5f);
+                lineTo(-0.5f, -0.5f);
+                closePath();
+                fill();
+                break;
+            case MarkerShape::Circle:
+                circle(0.0f, 0.0f, 0.5f);
+                fill();
+                break;
+            case MarkerShape::Square:
+                rect(-0.5f, -0.5f, 1.0f, 1.0f);
+                fill();
+                break;
+            case MarkerShape::Diamond:
+                moveTo(0.5f, 0.0f);
+                lineTo(0.0f, 0.5f);
+                lineTo(-0.5f, 0.0f);
+                lineTo(0.0f, -0.5f);
+                closePath();
+                fill();
+                break;
+            case MarkerShape::Bar: {
+                const float t = 0.5f / m.size;
+                rect(-t, -0.5f, 2.0f * t, 1.0f);
+                fill();
+                break;
+            }
+            case MarkerShape::Custom:
+                m.draw(*this);
+                break;
+            case MarkerShape::None:
+                break;
+        }
+        restore();
+    }
+    restore();
+
+    mImpl->commands = std::move(commands);
+    mImpl->commandx = commandx;
+    mImpl->commandy = commandy;
+    mImpl->clearPathCache();
 }
 
 // Skia-style immediate draw calls
@@ -1266,6 +1685,173 @@ void Context::drawLine(float x0, float y0, float x1, float y1)
     stroke();
 }
 
+bool Context::renderShapePass(ShapeType type, const float* params, const float* frame, const float* bounds, bool stroke)
+{
+    if (mImpl->params.renderShape == nullptr) return false;
+    const State& state = mImpl->topState();
+
+    // Shape space -> device space: the shape's frame first, then the current transform.
+    std::array<float, 6> m{};
+    std::memcpy(m.data(), frame, sizeof(float) * 6);
+    transformMultiply(m.data(), state.xform.data());
+    const float scale = detail::getAverageScale(m.data());
+    if (!(scale > 0.0f)) return false;
+
+    Shape shape{};
+    shape.type = static_cast<int>(type);
+    const bool aa = mImpl->params.edgeAntiAlias && state.shapeAntiAlias;
+    // Without antialiasing use a ramp far below a pixel, which the shader turns into a hard edge.
+    shape.aaWidth = (aa ? mImpl->fringeWidth : mImpl->fringeWidth * 1e-3f) / scale;
+    std::memcpy(shape.xform, m.data(), sizeof(shape.xform));
+    std::memcpy(shape.params, params, sizeof(shape.params));
+
+    Paint paint = stroke ? state.stroke : state.fill;
+    if (stroke) {
+        // Only plain strokes wider than a pixel match the shader's outline band exactly; dashes, the
+        // lineStyle effects and the thin-stroke alpha emulation need the tessellated path.
+        if (state.ndashes > 0 || state.lineStyle != static_cast<int>(LineStyle::Solid)) return false;
+        const float w = detail::clampf(state.strokeWidth * scale, 0.0f, 1000.0f);
+        if (w < mImpl->fringeWidth) return false;
+        shape.strokeHalfWidth = w * 0.5f / scale;
+    }
+    paint.innerColor.a *= state.alpha;
+    paint.outerColor.a *= state.alpha;
+
+    // Bounding quad of the shape, grown by the stroke band and the antialiasing ramp.
+    const float grow = shape.strokeHalfWidth + shape.aaWidth * 2.0f;
+    const float corners[4][2] = {{bounds[0] - grow, bounds[1] - grow}, {bounds[2] + grow, bounds[1] - grow}, {bounds[2] + grow, bounds[3] + grow}, {bounds[0] - grow, bounds[3] + grow}};
+    std::array<Vertex, 6> verts{};
+    const int order[6] = {0, 1, 2, 0, 2, 3};
+    for (int i = 0; i < 6; i++) {
+        float x = 0.0f, y = 0.0f;
+        transformPoint(x, y, m.data(), corners[order[i]][0], corners[order[i]][1]);
+        // u = 0.5, v = 1 is the fully covered interior of nanovg's antialiasing fringe.
+        verts[static_cast<size_t>(i)] = Vertex{x, y, 0.5f, 1.0f, 0.0f, 0.0f};
+    }
+    // The GL backend culls back faces; give both triangles the winding it draws (see drawVertices),
+    // whatever orientation the transform left them in.
+    if (detail::cross(verts[1].x - verts[0].x, verts[1].y - verts[0].y, verts[2].x - verts[0].x, verts[2].y - verts[0].y) < 0.0f) {
+        std::swap(verts[1], verts[2]);
+        std::swap(verts[4], verts[5]);
+    }
+
+    Scissor scissor = state.scissor;
+    mImpl->params.renderShape(mImpl->params.userPtr, &paint, state.compositeOperation, &scissor, mImpl->fringeWidth, &shape, verts.data(), static_cast<int>(verts.size()));
+    mImpl->fillTriCount += 2;
+    mImpl->drawCallCount++;
+    return true;
+}
+
+void Context::drawArrow(float x0, float y0, float x1, float y1, float stalkWidth, float headWidth, float headLength, PaintStyle style)
+{
+    beginPath();
+    const float dx = x1 - x0, dy = y1 - y0;
+    const float len = sqrtf(dx * dx + dy * dy);
+    if (len <= 1e-6f) return;
+    // Unit direction along the arrow and its left-hand normal.
+    const float ux = dx / len, uy = dy / len;
+    const float nx = -uy, ny = ux;
+
+    const float sw = std::max(stalkWidth, 0.0f) * 0.5f;
+    const float hw = std::max(headWidth * 0.5f, sw);
+    const float hl = std::min(std::max(headLength, 0.0f), len);
+
+    // Shader path: one quad in the arrow's own frame (tail at the origin, +x towards the tip).
+    // Its outline band has round corners, so strokes only take it with round joins.
+    const float frame[6] = {ux, uy, -uy, ux, x0, y0};
+    const float params[8] = {len, sw, hw, hl, 0.0f, 0.0f, 0.0f, 0.0f};
+    const float bounds[4] = {0.0f, -hw, len, hw};
+    const bool strokeOk = mImpl->topState().lineJoin == static_cast<int>(LineCap::Round);
+
+    bool built = false;
+    auto build = [&] {
+        if (built) return;
+        built = true;
+        // Base of the head, where the stalk ends.
+        const float bx = x1 - ux * hl, by = y1 - uy * hl;
+        moveTo(x0 + nx * sw, y0 + ny * sw);
+        lineTo(bx + nx * sw, by + ny * sw);
+        lineTo(bx + nx * hw, by + ny * hw);
+        lineTo(x1, y1);
+        lineTo(bx - nx * hw, by - ny * hw);
+        lineTo(bx - nx * sw, by - ny * sw);
+        lineTo(x0 - nx * sw, y0 - ny * sw);
+        closePath();
+    };
+    if (style != PaintStyle::Stroke && !renderShapePass(ShapeType::Arrow, params, frame, bounds, false)) {
+        build();
+        fill();
+    }
+    if (style != PaintStyle::Fill && !(strokeOk && renderShapePass(ShapeType::Arrow, params, frame, bounds, true))) {
+        build();
+        strokePath(false);
+    }
+}
+
+void Context::drawGrid(const Rect& r, int cols, int rows, GridShape shape, float size, PaintStyle style)
+{
+    beginPath();
+    if (cols <= 0 || rows <= 0 || size <= 0.0f || r.w <= 0.0f || r.h <= 0.0f) return;
+    const float cw = r.w / cols, ch = r.h / rows;
+    const State& state = mImpl->topState();
+
+    // Shader path: one quad covering the grid; the shader evaluates the nearest line / element.
+    // Lines are the union of the bars either way, so both paths fill and outline the same shape.
+    const float identity[6] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+    const float params[8] = {r.x, r.y, r.w, r.h, static_cast<float>(cols), static_cast<float>(rows), size, 0.0f};
+    const float pad = shape == GridShape::Lines ? size * 0.5f : 0.0f;
+    const float bounds[4] = {r.x - pad, r.y - pad, r.x + r.w + pad, r.y + r.h + pad};
+    const ShapeType type = shape == GridShape::Lines ? ShapeType::GridLines : shape == GridShape::Circles ? ShapeType::GridCircles : ShapeType::GridSquares;
+    // Circles and squares are evaluated against their own cell only, so they must not reach into a
+    // neighbour (strokes and the antialiasing ramp included). Square outlines have sharp corners,
+    // which is what a miter join gives a right angle.
+    const float scale = detail::getAverageScale(state.xform.data());
+    const float aaLocal = scale > 0.0f ? mImpl->fringeWidth / scale : 0.0f;
+    const float halfCell = 0.5f * std::min(cw, ch);
+    auto fits = [&](float strokeHalf) { return shape == GridShape::Lines || size + strokeHalf + aaLocal <= halfCell; };
+    const bool sharpJoins = state.lineJoin == static_cast<int>(LineCap::Miter) && state.miterLimit >= 1.42f;
+    const bool strokeOk = fits(state.strokeWidth * 0.5f) && (shape == GridShape::Circles || sharpJoins);
+
+    bool built = false;
+    auto build = [&] {
+        if (built) return;
+        built = true;
+        switch (shape) {
+            case GridShape::Lines: {
+                // The lines' union is the outer border rect with one hole per cell, so fill and stroke
+                // both follow its true outline (crossings neither double-blend nor show seams).
+                const float h = size * 0.5f;
+                rect(r.x - h, r.y - h, r.w + size, r.h + size);
+                if (cw > size && ch > size) {
+                    for (int j = 0; j < rows; j++) {
+                        for (int i = 0; i < cols; i++) {
+                            rect(r.x + i * cw + h, r.y + j * ch + h, cw - size, ch - size);
+                            pathWinding(static_cast<int>(Solidity::Hole));
+                        }
+                    }
+                }
+                break;
+            }
+            case GridShape::Circles:
+                for (int j = 0; j < rows; j++)
+                    for (int i = 0; i < cols; i++) circle(r.x + (i + 0.5f) * cw, r.y + (j + 0.5f) * ch, size);
+                break;
+            case GridShape::Squares:
+                for (int j = 0; j < rows; j++)
+                    for (int i = 0; i < cols; i++) rect(r.x + (i + 0.5f) * cw - size, r.y + (j + 0.5f) * ch - size, size * 2.0f, size * 2.0f);
+                break;
+        }
+    };
+    if (style != PaintStyle::Stroke && !(fits(0.0f) && renderShapePass(type, params, identity, bounds, false))) {
+        build();
+        fill();
+    }
+    if (style != PaintStyle::Fill && !(strokeOk && renderShapePass(type, params, identity, bounds, true))) {
+        build();
+        strokePath(false);
+    }
+}
+
 void Context::drawPoints(PointMode mode, const float* pts, int count)
 {
     if (pts == nullptr || count <= 0) return;
@@ -1336,6 +1922,13 @@ void Context::drawRoundRect(const Rect& r, float radius, PaintStyle style)
 {
     beginPath();
     roundedRect(r.x, r.y, r.w, r.h, radius);
+    renderWithStyle(*this, style);
+}
+
+void Context::drawRoundRect(const Rect& r, float rx, float ry, PaintStyle style)
+{
+    beginPath();
+    roundedRect(r.x, r.y, r.w, r.h, rx, ry);
     renderWithStyle(*this, style);
 }
 
@@ -1567,6 +2160,197 @@ void Context::fontBlur(float blur)
     state.fontBlur = blur;
 }
 
+void Context::textOuterShadow(float offsetX, float offsetY, float blur, const Color& color)
+{
+    State& state = mImpl->topState();
+    state.textOuterShadowX = std::isfinite(offsetX) ? offsetX : 0.0f;
+    state.textOuterShadowY = std::isfinite(offsetY) ? offsetY : 0.0f;
+    state.textOuterShadowBlur = std::isfinite(blur) ? std::max(blur, 0.0f) : 0.0f;
+    state.textOuterShadowColor = color;
+}
+
+void Context::textInnerShadow(float offsetX, float offsetY, float blur, const Color& color)
+{
+    State& state = mImpl->topState();
+    state.textInnerShadowX = std::isfinite(offsetX) ? offsetX : 0.0f;
+    state.textInnerShadowY = std::isfinite(offsetY) ? offsetY : 0.0f;
+    state.textInnerShadowBlur = std::isfinite(blur) ? std::max(blur, 0.0f) : 0.0f;
+    state.textInnerShadowColor = color;
+}
+
+namespace
+{
+// fontstash's glyph blur (a recursive exponential filter run twice along each axis, with zero borders),
+// on floats and with a fractional radius, so inner shadows match outer ones and animate smoothly.
+void blurMask(float* p, int w, int h, float blur)
+{
+    if (!(blur > 0.0f) || w < 2 || h < 2) return;
+    const float sigma = blur * 0.57735f;
+    const float a = 1.0f - expf(-2.3f / (sigma + 1.0f));
+    auto line = [a](float* d, int n, int stride) {
+        float z = 0.0f;
+        for (int i = 1; i < n; i++) d[i * stride] = z += a * (d[i * stride] - z);
+        d[(n - 1) * stride] = 0.0f;
+        z = 0.0f;
+        for (int i = n - 2; i >= 0; i--) d[i * stride] = z += a * (d[i * stride] - z);
+        d[0] = 0.0f;
+    };
+    for (int pass = 0; pass < 2; pass++) {
+        for (int x = 0; x < w; x++) line(p + x, h, w);
+        for (int y = 0; y < h; y++) line(p + (size_t)y * w, w, 1);
+    }
+}
+
+// Bilinear sample of a w x h mask at a position in pixel units (texel centers at i + 0.5), 0 outside.
+float sampleMask(const float* m, int w, int h, float x, float y)
+{
+    x -= 0.5f;
+    y -= 0.5f;
+    const float fx = floorf(x), fy = floorf(y);
+    const int ix = (int)fx, iy = (int)fy;
+    const float tx = x - fx, ty = y - fy;
+    auto at = [&](int cx, int cy) { return cx < 0 || cy < 0 || cx >= w || cy >= h ? 0.0f : m[(size_t)cy * w + cx]; };
+    return (at(ix, iy) * (1 - tx) + at(ix + 1, iy) * tx) * (1 - ty) + (at(ix, iy + 1) * (1 - tx) + at(ix + 1, iy + 1) * tx) * ty;
+}
+}  // namespace
+
+void Context::textInnerShadowPass(float x, float y, const char* string, const char* end)
+{
+    ContextImpl& im = *mImpl;
+    State& state = im.topState();
+    FONScontext* fs = im.fs.get();
+    // Glyph quads come in "font pixels": device pixels when the transform is a plain scale.
+    const float scale = detail::getFontScale(&state) * im.devicePxRatio;
+    const float invscale = 1.0f / scale;
+    const float blur = detail::clampf(state.textInnerShadowBlur * scale, 0.0f, 64.0f);
+    const float ox = state.textInnerShadowX * scale, oy = state.textInnerShadowY * scale;
+
+    // 1. Collect the glyphs as drawn: their quads and a copy of their atlas bitmaps (copied right away, as
+    //    a full atlas is reset to make room).
+    struct Glyph {
+        FONSquad q;
+        int w, h;
+        size_t offset;
+    };
+    std::vector<Glyph> glyphs;
+    std::vector<unsigned char> bitmaps;
+    fonsSetSize(fs, state.fontSize * scale);
+    fonsSetSpacing(fs, state.letterSpacing * scale);
+    fonsSetBlur(fs, state.fontBlur * scale);
+    fonsSetDilate(fs, state.fontDilate * scale);
+    fonsSetAlign(fs, state.textAlign);
+    fonsSetFont(fs, state.fontId);
+    FONStextIter iter, prevIter;
+    FONSquad q;
+    fonsTextIterInit(fs, &iter, 0, 0, string, end, FONS_GLYPH_BITMAP_REQUIRED);
+    prevIter = iter;
+    float minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+    while (fonsTextIterNext(fs, &iter, &q)) {
+        if (iter.prevGlyphIndex == -1) {  // atlas full: make room and retry, as text() does
+            if (!im.allocTextAtlas()) break;
+            iter = prevIter;
+            if (!fonsTextIterNext(fs, &iter, &q) || iter.prevGlyphIndex == -1) break;
+        }
+        prevIter = iter;
+        if (!(q.x1 > q.x0) || !(q.y1 > q.y0)) continue;
+        int aw = 0, ah = 0;
+        const unsigned char* atlas = fonsGetTextureData(fs, &aw, &ah);
+        const int sx0 = detail::maxi(0, (int)lroundf(q.s0 * aw)), sy0 = detail::maxi(0, (int)lroundf(q.t0 * ah));
+        const int sx1 = detail::mini(aw, (int)lroundf(q.s1 * aw)), sy1 = detail::mini(ah, (int)lroundf(q.t1 * ah));
+        if (sx1 <= sx0 || sy1 <= sy0) continue;
+        Glyph g{q, sx1 - sx0, sy1 - sy0, bitmaps.size()};
+        for (int r = sy0; r < sy1; r++) bitmaps.insert(bitmaps.end(), atlas + (size_t)r * aw + sx0, atlas + (size_t)r * aw + sx1);
+        glyphs.push_back(g);
+        minx = std::min(minx, q.x0);
+        miny = std::min(miny, q.y0);
+        maxx = std::max(maxx, q.x1);
+        maxy = std::max(maxy, q.y1);
+    }
+    if (glyphs.empty()) return;
+
+    // 2. Rasterize the text's coverage into a pixel grid around it, sampling the bitmaps the way the GPU
+    //    samples the atlas, so the shadow's edges line up with the drawn glyphs.
+    const int pad = (int)ceilf(blur) + 2;
+    const int gx0 = (int)floorf(minx) - pad, gy0 = (int)floorf(miny) - pad;
+    const int gw = (int)ceilf(maxx) + pad - gx0, gh = (int)ceilf(maxy) + pad - gy0;
+    if (gw <= 0 || gh <= 0 || gw > 4096 || gh > 4096) return;
+    std::vector<float>& cover = im.shadowCoverage;
+    cover.assign((size_t)gw * gh, 0.0f);
+    for (const Glyph& g : glyphs) {
+        const float kx = g.w / (g.q.x1 - g.q.x0), ky = g.h / (g.q.y1 - g.q.y0);
+        const int px0 = (int)floorf(g.q.x0), py0 = (int)floorf(g.q.y0), px1 = (int)ceilf(g.q.x1), py1 = (int)ceilf(g.q.y1);
+        for (int py = py0; py < py1; py++) {
+            for (int px = px0; px < px1; px++) {
+                // Texel coordinates in the glyph's bitmap, texel centers at i + 0.5.
+                const float u = (px + 0.5f - g.q.x0) * kx - 0.5f, v = (py + 0.5f - g.q.y0) * ky - 0.5f;
+                const float fu = floorf(u), fv = floorf(v);
+                const int iu = (int)fu, iv = (int)fv;
+                const float tu = u - fu, tv = v - fv;
+                auto at = [&](int cu, int cv) { return cu < 0 || cv < 0 || cu >= g.w || cv >= g.h ? 0.0f : bitmaps[g.offset + (size_t)cv * g.w + cu] / 255.0f; };
+                const float a = (at(iu, iv) * (1 - tu) + at(iu + 1, iv) * tu) * (1 - tv) + (at(iu, iv + 1) * (1 - tu) + at(iu + 1, iv + 1) * tu) * tv;
+                if (a <= 0.0f) continue;
+                float& c = cover[(size_t)(py - gy0) * gw + (px - gx0)];
+                c = 1.0f - (1.0f - c) * (1.0f - a);  // glyphs overlap like src-over coverage
+            }
+        }
+    }
+
+    // 3. Shadow = coverage x (1 - the blurred coverage moved by the offset).
+    std::vector<float>& blurred = im.shadowBlur;
+    blurred = cover;
+    blurMask(blurred.data(), gw, gh, blur);
+
+    // 4. Upload into this frame's next mask texture (one extra zero row and column so linear filtering
+    //    at the quad's edges never reads stale pixels).
+    if (im.shadowImageIdx >= im.shadowImages.size()) im.shadowImages.emplace_back();
+    ContextImpl::ShadowImage& slot = im.shadowImages[im.shadowImageIdx++];
+    if (slot.image == 0 || slot.width < gw + 1 || slot.height < gh + 1) {
+        if (slot.image != 0) im.params.renderDeleteTexture(im.params.userPtr, slot.image);
+        slot.width = std::max(slot.width, (gw + 1 + 63) & ~63);
+        slot.height = std::max(slot.height, (gh + 1 + 63) & ~63);
+        slot.image = im.params.renderCreateTexture(im.params.userPtr, static_cast<int>(Texture::Alpha), slot.width, slot.height, 0, nullptr);
+        if (slot.image == 0) {
+            slot.width = slot.height = 0;
+            return;
+        }
+    }
+    std::vector<unsigned char>& pixels = im.shadowPixels;
+    pixels.assign((size_t)slot.width * (gh + 1), 0);
+    for (int j = 0; j < gh; j++) {
+        for (int i = 0; i < gw; i++) {
+            const float c = cover[(size_t)j * gw + i];
+            if (c <= 0.0f) continue;
+            const float b = sampleMask(blurred.data(), gw, gh, i + 0.5f - ox, j + 0.5f - oy);
+            pixels[(size_t)j * slot.width + i] = (unsigned char)lroundf(detail::clampf(c * (1.0f - b), 0.0f, 1.0f) * 255.0f);
+        }
+    }
+    im.params.renderUpdateTexture(im.params.userPtr, slot.image, 0, 0, gw + 1, gh + 1, pixels.data());
+
+    // 5. Draw the mask as one quad over the text, tinted with the shadow color (like glyphs).
+    const bool isFlipped = detail::isTransformFlipped(state.xform.data()) != 0;
+    float qy0 = (float)gy0, qy1 = (float)(gy0 + gh);
+    if (isFlipped) std::swap(qy0, qy1);  // keeps the triangles' winding, as text() does
+    auto vert = [&](float px, float py) {
+        Vertex v{};
+        transformPoint(v.x, v.y, state.xform.data(), px * invscale + x, py * invscale + y);
+        v.u = (px - gx0) / slot.width;
+        v.v = (py - gy0) / slot.height;
+        return v;
+    };
+    const float qx0 = (float)gx0, qx1 = (float)(gx0 + gw);
+    const Vertex a = vert(qx0, qy0), b = vert(qx1, qy0), c = vert(qx1, qy1), d = vert(qx0, qy1);
+    const std::array<Vertex, 6> verts = {a, c, b, a, d, c};
+    Paint paint{};
+    detail::setPaintColor(paint, state.textInnerShadowColor);
+    paint.innerColor.a *= state.alpha;
+    paint.outerColor.a *= state.alpha;
+    paint.image = slot.image;
+    Scissor scissor = state.scissor;
+    im.params.renderTriangles(im.params.userPtr, &paint, state.compositeOperation, &scissor, verts.data(), static_cast<int>(verts.size()), im.fringeWidth);
+    im.drawCallCount++;
+    im.textTriCount += 2;
+}
+
 void Context::fontDilate(float dilate)
 {
     State& state = mImpl->topState();
@@ -1605,6 +2389,22 @@ void Context::fontFace(const char* font)
 
 float Context::text(float x, float y, const char* string, const char* end)
 {
+    if (end == NULL) end = string + strlen(string);
+    if (mImpl->topState().fontId == FONS_INVALID) return x;
+
+    // Shadow pass first: the same glyphs, blurred, shifted and in the shadow color.
+    if (mImpl->topState().textOuterShadowColor.a > 0.0f) {
+        save();
+        State& shadow = mImpl->topState();
+        detail::setPaintColor(shadow.fill, shadow.textOuterShadowColor);
+        shadow.fontBlur += shadow.textOuterShadowBlur;
+        shadow.textOuterShadowColor.a = 0.0f;
+        shadow.textInnerShadowColor.a = 0.0f;
+        translate(shadow.textOuterShadowX, shadow.textOuterShadowY);
+        text(x, y, string, end);
+        restore();
+    }
+
     State& state = mImpl->topState();
     FONStextIter iter, prevIter;
     FONSquad q;
@@ -1613,10 +2413,6 @@ float Context::text(float x, float y, const char* string, const char* end)
     float invscale = 1.0f / scale;
     int cverts = 0;
     int isFlipped = detail::isTransformFlipped(state.xform.data());
-
-    if (end == NULL) end = string + strlen(string);
-
-    if (state.fontId == FONS_INVALID) return x;
 
     fonsSetSize(mImpl->fs.get(), state.fontSize * scale);
     fonsSetSpacing(mImpl->fs.get(), state.letterSpacing * scale);
@@ -1674,7 +2470,9 @@ float Context::text(float x, float y, const char* string, const char* end)
     mImpl->flushTextTexture();
 
     mImpl->renderText(buf.data(), static_cast<int>(buf.size()));
-    return iter.nextx * invscale + x;
+    const float advance = iter.nextx * invscale + x;
+    if (state.textInnerShadowColor.a > 0.0f) textInnerShadowPass(x, y, string, end);
+    return advance;
 }
 
 void Context::textBox(float x, float y, float breakRowWidth, const char* string, const char* end)

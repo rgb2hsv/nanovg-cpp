@@ -24,6 +24,8 @@ nvg::Params copyParams(const NVGparams& p) noexcept
 {
     nvg::Params out{};
     static_assert(sizeof(NVGparams) == sizeof(nvg::Params));
+    static_assert(sizeof(NVGshape) == sizeof(nvg::Shape) && offsetof(NVGshape, params) == offsetof(nvg::Shape, params));
+    static_assert(static_cast<int>(NVG_SHAPE_ARROW) == static_cast<int>(nvg::ShapeType::Arrow));
     static_assert(alignof(NVGparams) == alignof(nvg::Params));
     std::memcpy(&out, &p, sizeof(out));
     return out;
@@ -95,6 +97,22 @@ nvg::PointMode toPointMode(int mode) noexcept
         default:
             return nvg::PointMode::Points;
     }
+}
+
+// Outside extern "C": returns a C++ type.
+nvg::Marker toCppMarker(NVGcontext* ctx, const NVGmarker& m)
+{
+    nvg::Marker out;
+    out.shape = m.shape >= NVG_MARKER_NONE && m.shape <= NVG_MARKER_CUSTOM ? static_cast<nvg::MarkerShape>(m.shape) : nvg::MarkerShape::None;
+    out.size = m.size;
+    out.orient = m.orient >= NVG_MARKER_ORIENT_AUTO && m.orient <= NVG_MARKER_ORIENT_FIXED ? static_cast<nvg::MarkerOrient>(m.orient) : nvg::MarkerOrient::Auto;
+    out.angle = m.angle;
+    if (m.draw != nullptr) {
+        auto* draw = m.draw;
+        void* uptr = m.uptr;
+        out.draw = [draw, uptr, ctx](nvg::Context&) { draw(ctx, uptr); };
+    }
+    return out;
 }
 }  // namespace
 
@@ -233,6 +251,52 @@ void nvgStrokeWidth(NVGcontext* ctx, float size)
 void nvgLineStyle(NVGcontext* ctx, int lineStyle)
 {
     ctx->lineStyle(lineStyle);
+}
+
+static_assert(NVG_MAX_STROKE_DASHES == nvg::maxStrokeDashes);
+
+void nvgStrokeDashArray(NVGcontext* ctx, const float* dashes, int count)
+{
+    ctx->strokeDashArray(dashes, count);
+}
+
+void nvgStrokeDashArrayString(NVGcontext* ctx, const char* dashArray)
+{
+    ctx->strokeDashArray(dashArray);
+}
+
+void nvgStrokeDashOffset(NVGcontext* ctx, float offset)
+{
+    ctx->strokeDashOffset(offset);
+}
+
+NVGmarker nvgMarker(int shape, float size)
+{
+    NVGmarker m{};
+    m.shape = shape;
+    m.size = size;
+    m.orient = NVG_MARKER_ORIENT_AUTO;
+    return m;
+}
+
+void nvgMarkerStart(NVGcontext* ctx, NVGmarker marker)
+{
+    ctx->markerStart(toCppMarker(ctx, marker));
+}
+
+void nvgMarkerMid(NVGcontext* ctx, NVGmarker marker)
+{
+    ctx->markerMid(toCppMarker(ctx, marker));
+}
+
+void nvgMarkerEnd(NVGcontext* ctx, NVGmarker marker)
+{
+    ctx->markerEnd(toCppMarker(ctx, marker));
+}
+
+void nvgMarkers(NVGcontext* ctx, NVGmarker marker)
+{
+    ctx->markers(toCppMarker(ctx, marker));
 }
 
 void nvgLineCap(NVGcontext* ctx, int cap)
@@ -463,6 +527,27 @@ void nvgArc(NVGcontext* ctx, float cx, float cy, float r, float a0, float a1, in
     ctx->arc(cx, cy, r, a0, a1, dir);
 }
 
+void nvgEllipticalArc(NVGcontext* ctx, float cx, float cy, float rx, float ry, float rotation, float a0, float a1, int dir)
+{
+    ctx->ellipticalArc(cx, cy, rx, ry, rotation, a0, a1, dir);
+}
+
+void nvgEllipticalArcTo(NVGcontext* ctx, float rx, float ry, float xAxisRotation, int largeArc, int sweep, float x, float y)
+{
+    ctx->ellipticalArcTo(rx, ry, xAxisRotation, largeArc != 0, sweep != 0, x, y);
+}
+
+void nvgRoundedRectElliptic(NVGcontext* ctx, float x, float y, float w, float h, float rx, float ry)
+{
+    ctx->roundedRect(x, y, w, h, rx, ry);
+}
+
+void nvgRoundedRectEllipticVarying(NVGcontext* ctx, float x, float y, float w, float h, float rxTopLeft, float ryTopLeft, float rxTopRight, float ryTopRight, float rxBottomRight,
+                                   float ryBottomRight, float rxBottomLeft, float ryBottomLeft)
+{
+    ctx->roundedRectVarying(x, y, w, h, rxTopLeft, ryTopLeft, rxTopRight, ryTopRight, rxBottomRight, ryBottomRight, rxBottomLeft, ryBottomLeft);
+}
+
 void nvgRect(NVGcontext* ctx, float x, float y, float w, float h)
 {
     ctx->rect(x, y, w, h);
@@ -551,6 +636,16 @@ void nvgFontSize(NVGcontext* ctx, float size)
 void nvgFontBlur(NVGcontext* ctx, float blur)
 {
     ctx->fontBlur(blur);
+}
+
+void nvgTextOuterShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color)
+{
+    ctx->textOuterShadow(offsetX, offsetY, blur, toCpp(color));
+}
+
+void nvgTextInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color)
+{
+    ctx->textInnerShadow(offsetX, offsetY, blur, toCpp(color));
 }
 
 void nvgFontDilate(NVGcontext* ctx, float dilate)
@@ -642,6 +737,12 @@ int nvgTextBreakLines(NVGcontext* ctx, const char* string, const char* end, floa
 static_assert(sizeof(NVGrect) == sizeof(nvg::Rect));
 static_assert(sizeof(NVGvertex) == sizeof(nvg::Vertex));
 static_assert(static_cast<int>(NVG_PAINT_FILL) == static_cast<int>(nvg::PaintStyle::Fill) && static_cast<int>(NVG_PAINT_FILL_AND_STROKE) == static_cast<int>(nvg::PaintStyle::FillAndStroke));
+static_assert(static_cast<int>(NVG_GRID_LINES) == static_cast<int>(nvg::GridShape::Lines) && static_cast<int>(NVG_GRID_CIRCLES) == static_cast<int>(nvg::GridShape::Circles) &&
+              static_cast<int>(NVG_GRID_SQUARES) == static_cast<int>(nvg::GridShape::Squares));
+static_assert(static_cast<int>(NVG_MARKER_ARROW) == static_cast<int>(nvg::MarkerShape::Arrow) && static_cast<int>(NVG_MARKER_BAR) == static_cast<int>(nvg::MarkerShape::Bar) &&
+              static_cast<int>(NVG_MARKER_CUSTOM) == static_cast<int>(nvg::MarkerShape::Custom));
+static_assert(static_cast<int>(NVG_MARKER_ORIENT_AUTO_START_REVERSE) == static_cast<int>(nvg::MarkerOrient::AutoStartReverse) &&
+              static_cast<int>(NVG_MARKER_ORIENT_FIXED) == static_cast<int>(nvg::MarkerOrient::Fixed));
 static_assert(static_cast<int>(NVG_POINTS_POLYGON) == static_cast<int>(nvg::PointMode::Polygon));
 static_assert(static_cast<int>(NVG_ANTIALIAS) == static_cast<int>(nvg::CreateFlags::Antialias) && static_cast<int>(NVG_STENCIL_STROKES) == static_cast<int>(nvg::CreateFlags::StencilStrokes) &&
               static_cast<int>(NVG_DEBUG) == static_cast<int>(nvg::CreateFlags::Debug));
@@ -676,6 +777,21 @@ void nvgDrawPoint(NVGcontext* ctx, float x, float y)
     ctx->drawPoint(x, y);
 }
 
+void nvgDrawArrow(NVGcontext* ctx, float x0, float y0, float x1, float y1, float stalkWidth, float headWidth, float headLength, int style)
+{
+    ctx->drawArrow(x0, y0, x1, y1, stalkWidth, headWidth, headLength, toPaintStyle(style));
+}
+
+void nvgDrawGrid(NVGcontext* ctx, NVGrect r, int cols, int rows, int shape, float size, int style)
+{
+    nvg::GridShape gs = nvg::GridShape::Lines;
+    if (shape == NVG_GRID_CIRCLES)
+        gs = nvg::GridShape::Circles;
+    else if (shape == NVG_GRID_SQUARES)
+        gs = nvg::GridShape::Squares;
+    ctx->drawGrid(toCpp(r), cols, rows, gs, size, toPaintStyle(style));
+}
+
 void nvgDrawPolygon(NVGcontext* ctx, const float* pts, int count, int style)
 {
     ctx->drawPolygon(pts, count, toPaintStyle(style));
@@ -689,6 +805,11 @@ void nvgDrawRect(NVGcontext* ctx, NVGrect r, int style)
 void nvgDrawRoundRect(NVGcontext* ctx, NVGrect r, float radius, int style)
 {
     ctx->drawRoundRect(toCpp(r), radius, toPaintStyle(style));
+}
+
+void nvgDrawRoundRectElliptic(NVGcontext* ctx, NVGrect r, float rx, float ry, int style)
+{
+    ctx->drawRoundRect(toCpp(r), rx, ry, toPaintStyle(style));
 }
 
 void nvgDrawRoundRectVarying(NVGcontext* ctx, NVGrect r, float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft, int style)

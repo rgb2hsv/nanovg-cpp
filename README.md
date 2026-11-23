@@ -134,6 +134,44 @@ Calling `nvgBeginPath()` will clear any existing paths and start drawing from bl
 
 In the C++ API, the same operations are methods on `nvg::Context` (for example `vg.beginPath()`, `vg.rect(...)`, `vg.fill()`).
 
+Beyond the upstream path calls, this fork adds SVG-style elliptical geometry:
+
+```cpp
+vg.moveTo(10, 50);
+vg.ellipticalArcTo(40, 25, /*xAxisRotation (radians)*/ 0.3f, /*largeArc*/ false, /*sweep*/ true, 90, 40);  // SVG "A" command
+vg.ellipticalArc(150, 50, 40, 25, /*rotation*/ 0.3f, /*a0*/ 0, /*a1*/ nvg::nvgPi, static_cast<int>(nvg::Winding::CW));
+vg.roundedRect(200, 20, 120, 60, /*rx*/ 30, /*ry*/ 12);   // elliptical corners, like <rect rx ry>
+vg.roundedRectVarying(340, 20, 120, 60, 30, 12, 8, 8, 20, 30, 4, 4);  // (rx, ry) per corner, clockwise from top left
+```
+
+`ellipticalArcTo` follows SVG's rules: radii too small to reach the endpoint are scaled up, a zero radius gives a straight line, and an endpoint equal to the current point draws nothing. The C API names are `nvgEllipticalArcTo`, `nvgEllipticalArc`, `nvgRoundedRectElliptic` and `nvgRoundedRectEllipticVarying`.
+
+Strokes can carry SVG-style markers: `markerStart`, `markerMid` and `markerEnd` (or `markers` for all three) place a shape at the path's first vertex, its inner vertices and its last vertex, oriented along the path. Built-in shapes are `Arrow`, `Circle`, `Square`, `Diamond` and `Bar`, sized in stroke widths and filled with the stroke paint. `MarkerShape::Custom` runs your own drawing code in the marker's frame:
+
+```cpp
+vg.markerStart(nvg::Marker{nvg::MarkerShape::Circle, 3});
+vg.markerEnd(nvg::Marker{nvg::MarkerShape::Arrow, 4});             // size in stroke widths
+vg.markers(nvg::Marker{nvg::MarkerShape::Arrow, 4, nvg::MarkerOrient::AutoStartReverse});  // double-headed
+nvg::Marker ring{nvg::MarkerShape::Custom, 1};
+ring.draw = [](nvg::Context& c) { c.beginPath(); c.circle(0, 0, 3); c.stroke(); };
+vg.markerMid(ring);
+vg.markers(nvg::Marker{});                                          // off
+```
+
+Vertices are the end points of the path commands, as in SVG: a Bézier, arc or ellipse is one segment, and zero-length segments add no vertex. Markers are part of the state (saved and restored), and the Skia-style calls that stroke (`drawLine`, `drawRect`, …) draw them too; `drawArrow` and `drawGrid` don't. In C, use `nvgMarkerStart(vg, nvgMarker(NVG_MARKER_ARROW, 4))` and so on, with `NVGmarker.draw` / `uptr` for custom markers.
+
+Text can have soft outer and inner shadows. `textOuterShadow` works like CSS `text-shadow`: it draws an offset, blurred copy of the glyphs under everything `text()` and `textBox()` render, and with no offset and a colored shadow it works as a glow. `textInnerShadow` shades the inside of the glyphs wherever an offset, blurred copy of them doesn't cover them, so an offset down and to the right darkens the top-left inner edges:
+
+```cpp
+vg.textOuterShadow(/*offsetX*/ 2, /*offsetY*/ 3, /*blur*/ 4, nvg::rgba(0, 0, 0, 200));
+vg.textInnerShadow(/*offsetX*/ 1, /*offsetY*/ 2, /*blur*/ 2, nvg::rgba(0, 0, 0, 160));
+vg.text(x, y, "Shadowed", nullptr);
+vg.textOuterShadow(0, 0, 6, nvg::rgba(80, 200, 255, 255));   // glow
+vg.textOuterShadow(0, 0, 0, nvg::rgba(0, 0, 0, 0));         // off (zero alpha)
+```
+
+The outer shadow reuses the font atlas blur, so it is capped at 20 device pixels, and each distinct blur value caches its own glyphs (avoid animating it continuously). The inner shadow is built per `text()` call on the CPU: it rasterizes the string's coverage from the atlas, blurs it (the same filter, with fractional radii up to 64 device pixels, so it can be animated), shifts it by the whole-string offset, and draws the result as one textured quad. It works on every backend, and its cost grows with the text's pixel area. C: `nvgTextOuterShadow`, `nvgTextInnerShadow`.
+
 ### Skia-style draw calls (C++ only)
 
 `nvg::Context` also offers one-call draw methods modeled after `SkCanvas`. Each builds its own path and renders it with the current state, using an optional `nvg::PaintStyle` (`Fill`, `Stroke`, `FillAndStroke`). Because they replace the current path, don't call them in the middle of a `beginPath()` … `fill()` sequence.
@@ -141,12 +179,27 @@ In the C++ API, the same operations are methods on `nvg::Context` (for example `
 ```cpp
 vg.clear(nvg::rgba(40, 40, 48, 255));
 vg.drawRoundRect(nvg::Rect{20, 20, 100, 60}, 12, nvg::PaintStyle::FillAndStroke);
+vg.drawRoundRect(nvg::Rect{140, 20, 100, 60}, /*rx*/ 30, /*ry*/ 12);  // elliptical corners
 vg.drawArc(200, 50, 30, 0, nvg::nvgPi * 1.5f, /*useCenter*/ true);
 vg.drawLine(20, 120, 220, 160);
+vg.drawArrow(20, 200, 220, 200, /*stalkWidth*/ 4, /*headWidth*/ 18, /*headLength*/ 14);
+vg.drawGrid(nvg::Rect{20, 220, 200, 100}, /*cols*/ 8, /*rows*/ 4, nvg::GridShape::Circles, /*radius*/ 5);
 vg.drawImageRect(image, nvg::Rect{0, 0, 64, 64}, nvg::Rect{240, 20, 128, 128});
 ```
 
-Available: `drawPaint`, `drawColor`, `clear`, `drawLine`, `drawPoints` (`PointMode::Points/Lines/Polygon`), `drawPoint`, `drawPolygon`, `drawRect`, `drawRoundRect`, `drawRoundRectVarying`, `drawDRRect`, `drawCircle`, `drawOval`, `drawArc`, `drawImage`, `drawImageRect`, `drawImageNine`, `drawVertices`.
+Available: `drawPaint`, `drawColor`, `clear`, `drawLine`, `drawArrow`, `drawGrid` (`GridShape::Lines/Circles/Squares`, with tunable line thickness or element radius), `drawPoints` (`PointMode::Points/Lines/Polygon`), `drawPoint`, `drawPolygon`, `drawRect`, `drawRoundRect` (one radius, or `rx, ry`), `drawRoundRectVarying`, `drawDRRect`, `drawCircle`, `drawOval`, `drawArc`, `drawImage`, `drawImageRect`, `drawImageNine`, `drawVertices`.
+
+Strokes (including `drawLine`, `drawArc`, … with `PaintStyle::Stroke`) can be dashed SVG-style with `strokeDashArray` / `strokeDashOffset`, mirroring `stroke-dasharray` / `stroke-dashoffset`: alternating dash and gap lengths in local units, an odd-length list repeated, the pattern restarting on each subpath, and caps on every dash. The array can be given as floats or as an SVG string:
+
+```cpp
+vg.strokeDashArray("6 3");                 // or: const float d[] = {6, 3}; vg.strokeDashArray(d, 2);
+vg.strokeDashOffset(phase);                // animate for marching ants
+vg.lineCap(static_cast<int>(nvg::LineCap::Round));
+vg.strokeDashArray("0 8");                 // zero-length dashes with round caps draw dots
+vg.strokeDashArray("none");                // back to solid
+```
+
+`drawGrid` and `drawArrow` don't tessellate: each call (and each fill or stroke pass) is a single quad, and the fragment shader computes the shape's antialiased coverage analytically and multiplies it into the current paint (colors, gradients and image patterns all work), so a 1000×1000 grid costs the same geometry as a 2×2 one. This needs the backend's optional `renderShape` hook (`Params::renderShape` / `NVGparams.renderShape`), which the bundled GL (both APIs) and Vulkan backends implement. Calls that the shader can't reproduce exactly fall back to tessellated geometry: no hook, dashed or `lineStyle` strokes, strokes thinner than a pixel, grid circles/squares that reach into a neighboring cell, square/line strokes without miter joins, and arrow strokes without round joins.
 
 `drawPaint`, `drawColor` and `clear` fill only the current scissor area, so a `Copy` composite does not wipe pixels outside it. `drawVertices` accepts triangles in either winding order. The calls work the same on the OpenGL and Vulkan backends.
 

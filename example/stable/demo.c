@@ -395,26 +395,26 @@ void drawFancyText(NVGcontext* vg, float x, float y)
 
     nvgFontBlur(vg, 10);
     nvgFillColor(vg, nvgRGB(255, 0, 102));
-    nvgText(vg, x, y, "Font Blur", NULL);
+    nvgText(vg, x, y, "Blur", NULL);
     nvgFontBlur(vg, 0);
     nvgFillColor(vg, nvgRGB(255, 255, 255));
-    nvgText(vg, x, y, "Font Blur", NULL);
+    nvgText(vg, x, y, "Blur", NULL);
 
     nvgFontDilate(vg, 2);
     nvgFillColor(vg, nvgRGB(255, 0, 102));
-    nvgText(vg, x, y + 40, "Font Outline", NULL);
+    nvgText(vg, x, y + 40, "Outline", NULL);
     nvgFontDilate(vg, 0);
     nvgFillColor(vg, nvgRGB(255, 255, 255));
-    nvgText(vg, x, y + 40, "Font Outline", NULL);
+    nvgText(vg, x, y + 40, "Outline", NULL);
 
     nvgFontDilate(vg, 3);  // Dilate will always be applied before blur
     nvgFontBlur(vg, 2);
     nvgFillColor(vg, nvgRGB(255, 0, 102));
-    nvgText(vg, x, y + 80, "Font Blur Outline", NULL);
+    nvgText(vg, x, y + 80, "Blur Outline", NULL);
     nvgFontDilate(vg, 0);
     nvgFontBlur(vg, 0);
     nvgFillColor(vg, nvgRGB(255, 255, 255));
-    nvgText(vg, x, y + 80, "Font Blur Outline", NULL);
+    nvgText(vg, x, y + 80, "Blur Outline", NULL);
 }
 
 void drawEyes(NVGcontext* vg, float x, float y, float w, float h, float mx, float my, float t)
@@ -1279,7 +1279,6 @@ void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, f
 
     drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
     drawStylizedLines(vg, width - 245, 15, 180, 130);
-    drawFancyText(vg, width - 160, 170);
     drawParagraph(vg, width - 450, 50, 150, 100, mx, my);
     drawGraph(vg, 0, height / 2, width, height / 2, t);
     drawColorwheel(vg, width - 280, height - 320, 250.0f, 250.0f, t);
@@ -1373,6 +1372,8 @@ static NVGrect rect(float x, float y, float w, float h)
 
 static void drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title)
 {
+    const float maxW = cell.w - 16.0f;
+    float titleW;
     nvgFillColor(vg, nvgRGBA(255, 255, 255, 12));
     nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 40));
     nvgStrokeWidth(vg, 1.0f);
@@ -1381,6 +1382,9 @@ static void drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title)
     nvgFontSize(vg, 13.0f);
     nvgFontFace(vg, "sans-bold");
     nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+    // Shrink long titles so they stay inside narrow cells.
+    titleW = nvgTextBounds(vg, 0, 0, title, NULL, NULL);
+    if (titleW > maxW && maxW > 0.0f) nvgFontSize(vg, 13.0f * maxW / titleW);
     nvgFillColor(vg, nvgRGBA(255, 255, 255, 180));
     nvgText(vg, cell.x + 8, cell.y + 6, title, NULL);
 }
@@ -1451,6 +1455,221 @@ static void demoLines(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
         nvgStrokeWidth(vg, 1.0f + i * 0.4f);
         nvgDrawLine(vg, cx + cosf(a) * 12, cy + sinf(a) * 12, cx + cosf(a) * 55, cy + sinf(a) * 55);
     }
+}
+
+static void demoArrows(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // Left: a fan of filled arrows whose head width, head length and stalk width grow together.
+    const float ox = c.x + 22, oy = c.y + c.h - 18;
+    const float cx = c.x + c.w - 62, cy = c.y + 75;
+    const float a = t * 0.7f;
+    const float headW = 22.0f + 10.0f * sinf(t * 2.0f);
+    int i;
+    NVG_NOTUSED(data);
+    for (i = 0; i < 4; i++) {
+        const float ai = -NVG_PI * 0.5f + (i + 0.5f) * NVG_PI * 0.125f + sinf(t + i) * 0.08f;
+        const float len = 95.0f + 8.0f * sinf(t * 1.3f + i);
+        nvgFillColor(vg, nvgHSLA(0.55f + i * 0.08f, 0.7f, 0.6f, 255));
+        nvgDrawArrow(vg, ox, oy, ox + cosf(ai) * len, oy + sinf(ai) * len, 2.0f + i * 2.0f, 10.0f + i * 5.0f, 10.0f + i * 4.0f, NVG_PAINT_FILL);
+    }
+
+    // Right: a rotating outlined arrow with a breathing head, and a stalk-less head below it.
+    nvgFillColor(vg, nvgRGBA(255, 190, 60, 255));
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 230));
+    nvgStrokeWidth(vg, 2.0f);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgDrawArrow(vg, cx - cosf(a) * 40, cy - sinf(a) * 40, cx + cosf(a) * 40, cy + sinf(a) * 40, 8.0f, headW, 24.0f, NVG_PAINT_FILL_AND_STROKE);
+    nvgLineJoin(vg, NVG_MITER);
+    nvgStrokeColor(vg, nvgRGBA(120, 230, 140, 255));
+    nvgStrokeWidth(vg, 1.5f);
+    nvgDrawArrow(vg, cx - 45, c.y + c.h - 18, cx + 45, c.y + c.h - 18, 0.0f, 14.0f, 14.0f, NVG_PAINT_STROKE);
+}
+
+static void demoDashes(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    static const float dots[] = {0.0f, 10.0f};
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 220));
+    nvgStrokeWidth(vg, 3.0f);
+    nvgStrokeDashArrayString(vg, "12 5");  // plain dashes
+    nvgDrawLine(vg, c.x + 15, c.y + 42, c.x + c.w - 15, c.y + 42);
+
+    nvgStrokeColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgStrokeWidth(vg, 5.0f);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgStrokeDashArray(vg, dots, 2);  // zero-length dashes + round caps = dots
+    nvgDrawLine(vg, c.x + 17, c.y + 62, c.x + c.w - 15, c.y + 62);
+
+    nvgStrokeColor(vg, nvgRGBA(255, 160, 0, 255));
+    nvgStrokeWidth(vg, 3.0f);
+    nvgLineCap(vg, NVG_BUTT);
+    nvgStrokeDashArrayString(vg, "14, 4, 3, 4");  // dash-dot
+    nvgDrawLine(vg, c.x + 15, c.y + 82, c.x + c.w - 15, c.y + 82);
+
+    // Marching ants: an odd-length array ("8 4 2" -> "8 4 2 8 4 2") with an animated offset, on a curve.
+    nvgStrokeColor(vg, nvgRGBA(120, 230, 140, 255));
+    nvgStrokeWidth(vg, 2.5f);
+    nvgStrokeDashArrayString(vg, "8 4 2");
+    nvgStrokeDashOffset(vg, -t * 20.0f);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, c.x + 15, c.y + 130);
+    nvgBezierTo(vg, c.x + 70, c.y + 80, c.x + 120, c.y + 180, c.x + c.w - 15, c.y + 110);
+    nvgStroke(vg);
+    nvgRestore(vg);
+}
+
+static void demoGrid(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // Three 4x5 grids side by side, each with its thickness / radius animating.
+    const float gw = (c.w - 40) / 3.0f, gy = c.y + 42, gh = c.h - 56;
+    NVG_NOTUSED(data);
+    nvgFillColor(vg, nvgRGBA(80, 200, 255, 200));
+    nvgDrawGrid(vg, rect(c.x + 10, gy, gw, gh), 4, 5, NVG_GRID_LINES, 2.0f + 1.5f * sinf(t * 1.5f), NVG_PAINT_FILL);
+    nvgFillColor(vg, nvgRGBA(255, 120, 160, 255));
+    nvgDrawGrid(vg, rect(c.x + 20 + gw, gy, gw, gh), 4, 5, NVG_GRID_CIRCLES, 4.0f + 2.0f * sinf(t * 1.5f + 1.0f), NVG_PAINT_FILL);
+    nvgFillColor(vg, nvgRGBA(255, 200, 60, 255));
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 200));
+    nvgStrokeWidth(vg, 1.0f);
+    nvgDrawGrid(vg, rect(c.x + 30 + gw * 2, gy, gw, gh), 4, 5, NVG_GRID_SQUARES, 4.0f + 2.0f * sinf(t * 1.5f + 2.0f), NVG_PAINT_FILL_AND_STROKE);
+}
+
+static void ringMarker(NVGcontext* vg, void* uptr)
+{
+    NVG_NOTUSED(uptr);
+    nvgBeginPath(vg);
+    nvgCircle(vg, 0.0f, 0.0f, 3.0f);
+    nvgStroke(vg);
+}
+
+static void demoMarkers(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    NVGmarker head = nvgMarker(NVG_MARKER_ARROW, 4.0f);
+    NVGmarker ring = nvgMarker(NVG_MARKER_CUSTOM, 1.0f);
+    int i;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    // A zigzag with a dot at the start, diamonds at the corners and an arrowhead at the end.
+    nvgStrokeColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgStrokeWidth(vg, 2.0f);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgMarkerStart(vg, nvgMarker(NVG_MARKER_CIRCLE, 3.0f));
+    nvgMarkerMid(vg, nvgMarker(NVG_MARKER_DIAMOND, 3.5f));
+    nvgMarkerEnd(vg, nvgMarker(NVG_MARKER_ARROW, 5.0f));
+    nvgBeginPath(vg);
+    for (i = 0; i < 5; i++) {
+        const float x = c.x + 20 + i * (c.w - 50) / 4.0f;
+        const float y = c.y + 62 + ((i & 1) ? 18.0f : -12.0f) + 5.0f * sinf(t * 2.0f + i);
+        if (i == 0)
+            nvgMoveTo(vg, x, y);
+        else
+            nvgLineTo(vg, x, y);
+    }
+    nvgStroke(vg);
+
+    // A double-headed curve: auto-start-reverse turns the start arrow around.
+    nvgMarkerMid(vg, nvgMarker(NVG_MARKER_NONE, 0.0f));
+    head.orient = NVG_MARKER_ORIENT_AUTO_START_REVERSE;
+    nvgMarkerStart(vg, head);
+    nvgMarkerEnd(vg, head);
+    nvgStrokeColor(vg, nvgRGBA(255, 160, 0, 255));
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, c.x + 25, c.y + 125);
+    nvgBezierTo(vg, c.x + 80, c.y + 95 + 25 * sinf(t), c.x + 160, c.y + 155 - 25 * sinf(t), c.x + c.w - 25, c.y + 118);
+    nvgStroke(vg);
+
+    // A ruler: tick bars at the inner vertices and custom ring markers at the ends.
+    nvgStrokeColor(vg, nvgRGBA(120, 230, 140, 255));
+    nvgStrokeWidth(vg, 1.5f);
+    nvgMarkerMid(vg, nvgMarker(NVG_MARKER_BAR, 6.0f));
+    ring.draw = ringMarker;
+    nvgMarkerStart(vg, ring);
+    nvgMarkerEnd(vg, ring);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, c.x + 25, c.y + 160);
+    for (i = 1; i <= 8; i++) nvgLineTo(vg, c.x + 25 + i * (c.w - 50) / 8.0f, c.y + 160);
+    nvgStroke(vg);
+    nvgRestore(vg);
+}
+
+static void demoEllipticalArcs(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // The four SVG arcs between the same two points (largeArc x sweep), on a rotating ellipse.
+    const float x0 = c.x + 55, y0 = c.y + 110, x1 = c.x + 105, y1 = c.y + 85;
+    const float rot = 0.4f * sinf(t * 0.8f);
+    const float cx = c.x + c.w - 50, cy = c.y + 100;
+    NVGcolor colors[4];
+    int i;
+    NVG_NOTUSED(data);
+    colors[0] = nvgRGBA(80, 200, 255, 255);
+    colors[1] = nvgRGBA(255, 160, 0, 255);
+    colors[2] = nvgRGBA(255, 90, 120, 255);
+    colors[3] = nvgRGBA(120, 230, 140, 255);
+    nvgStrokeWidth(vg, 2.5f);
+    for (i = 0; i < 4; i++) {
+        nvgStrokeColor(vg, colors[i]);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, x0, y0);
+        nvgEllipticalArcTo(vg, 42.0f, 24.0f, rot, (i & 2) != 0, (i & 1) != 0, x1, y1);
+        nvgStroke(vg);
+    }
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+    nvgDrawCircle(vg, x0, y0, 3.0f, NVG_PAINT_FILL);
+    nvgDrawCircle(vg, x1, y1, 3.0f, NVG_PAINT_FILL);
+
+    // A wedge cut from a rotated ellipse with the center form.
+    nvgFillColor(vg, nvgRGBA(255, 200, 60, 230));
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx, cy);
+    nvgEllipticalArc(vg, cx, cy, 38.0f, 22.0f, t * 0.6f, 0.3f, 0.3f + NVG_PI * (1.2f + 0.5f * sinf(t)), NVG_CW);
+    nvgClosePath(vg);
+    nvgFill(vg);
+}
+
+static void demoEllipticalCorners(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // rx and ry trade places over time: wide, flat corners turn into tall, narrow ones.
+    const float k = 0.5f + 0.5f * sinf(t * 1.3f);
+    NVG_NOTUSED(data);
+    nvgFillPaint(vg, nvgLinearGradient(vg, c.x, c.y + 40, c.x + c.w, c.y + c.h, nvgRGBA(120, 80, 255, 255), nvgRGBA(255, 90, 120, 255)));
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 220));
+    nvgStrokeWidth(vg, 2.0f);
+    nvgDrawRoundRectElliptic(vg, rect(c.x + 12, c.y + 42, c.w * 0.5f - 18, c.h - 56), 8.0f + 40.0f * k, 48.0f - 40.0f * k, NVG_PAINT_FILL_AND_STROKE);
+    // Per-corner elliptical radii.
+    nvgFillColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgBeginPath(vg);
+    nvgRoundedRectEllipticVarying(vg, c.x + c.w * 0.5f + 6, c.y + 42, c.w * 0.5f - 18, c.h - 56, 50, 20, 4, 4, 30, 60 * k + 5, 10, 30);
+    nvgFill(vg);
+    nvgStroke(vg);
+}
+
+static void demoTextOuterShadow(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgFontFace(vg, "sans-bold");
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    nvgFontSize(vg, 28.0f);
+    // An outer shadow whose light source moves around.
+    nvgTextOuterShadow(vg, 3.0f * cosf(t), 3.0f + 1.5f * sinf(t), 3.0f, nvgRGBA(0, 0, 0, 220));
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+    nvgText(vg, c.x + c.w * 0.18f, c.y + 62, "Outer", NULL);
+    nvgTextOuterShadow(vg, 0.0f, 0.0f, 0.0f, nvgRGBA(0, 0, 0, 0));
+    // An inner shadow: the offset, blurred copy shades the opposite inner edges.
+    nvgTextInnerShadow(vg, 1.5f * cosf(t), 1.5f + 0.5f * sinf(t), 1.5f, nvgRGBA(120, 40, 0, 255));
+    nvgFillColor(vg, nvgRGBA(255, 200, 60, 255));
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 62, "Inner", NULL);
+    nvgTextInnerShadow(vg, 0.0f, 0.0f, 0.0f, nvgRGBA(0, 0, 0, 0));
+    // No offset and a colored outer shadow make a glow.
+    nvgTextOuterShadow(vg, 0.0f, 0.0f, 5.0f, nvgRGBA(80, 200, 255, 255));
+    nvgFillColor(vg, nvgRGBA(230, 250, 255, 255));
+    nvgText(vg, c.x + c.w * 0.82f, c.y + 62, "Glow", NULL);
+    nvgTextOuterShadow(vg, 0.0f, 0.0f, 0.0f, nvgRGBA(0, 0, 0, 0));
+    // The classic fontBlur / fontDilate effects, scaled down to fit under them.
+    nvgTranslate(vg, c.x + c.w * 0.5f, c.y + 103);
+    nvgScale(vg, 0.6f, 0.6f);
+    drawFancyText(vg, 0.0f, 0.0f);
+    nvgRestore(vg);
 }
 
 static void demoPoints(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
@@ -1613,18 +1832,20 @@ typedef void (*DrawCallsDemoFn)(NVGcontext* vg, NVGrect c, float t, const DemoDa
 
 void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float height, float t, DemoData* data)
 {
-    enum { cols = 6, rows = 2 };
+    enum { cols = 7, rows = 3, count = 19 };
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     const float designW = 240.0f, designH = 175.0f;
     const float pad = 10.0f, top = 34.0f;
     const float cw = (width - pad * (cols + 1)) / cols;
     const float ch = (height - top - pad * rows) / rows;
-    static const char* titles[cols * rows] = {
-        "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawPoints / drawPoint",
-        "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine", "drawVertices", "clear",
+    static const char* titles[count] = {
+        "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawArrow", "strokeDashArray", "markerStart / Mid / End",
+        "ellipticalArcTo / Arc", "drawRoundRect(rx, ry)", "drawPoints / drawPoint", "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine",
+        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner",
     };
-    static const DrawCallsDemoFn draws[cols * rows] = {
-        demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoPoints, demoPolygon, demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear,
+    static const DrawCallsDemoFn draws[count] = {
+        demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoArrows, demoDashes, demoMarkers, demoEllipticalArcs, demoEllipticalCorners, demoPoints, demoPolygon,
+        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow,
     };
     float s;
     int i;
@@ -1645,7 +1866,7 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     if (cw <= 0.0f || ch <= 0.0f) return;
     s = cw / designW < ch / designH ? cw / designW : ch / designH;
 
-    for (i = 0; i < cols * rows; i++) {
+    for (i = 0; i < count; i++) {
         const NVGrect c = rect(x + pad + (i % cols) * (cw + pad), y + top + (i / cols) * (ch + pad), cw, ch);
         nvgSave(vg);
         drawCallsCell(vg, c, titles[i]);
