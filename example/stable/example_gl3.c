@@ -17,6 +17,9 @@
 //
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #ifdef NANOVG_GLEW
 #include <GL/glew.h>
 #endif
@@ -50,7 +53,17 @@ static void key(GLFWwindow* window, int key, int scancode, int action, int mods)
     if (key == GLFW_KEY_P && action == GLFW_PRESS) premult = !premult;
 }
 
-int main()
+static int parseTestCount(const char* s, int* out)
+{
+    char* endptr = NULL;
+    long v = strtol(s, &endptr, 10);
+    if (endptr == s || (endptr && *endptr != '\0') || v < 0) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+// Usage: example_stable_gl3 [--test N]  (same capture/compare mode as the C++ example_gl3)
+int main(int argc, char** argv)
 {
     GLFWwindow* window;
     DemoData data;
@@ -58,6 +71,27 @@ int main()
     GPUtimer gpuTimer;
     PerfGraph fps, cpuGraph, gpuGraph;
     double prevt = 0, cpuTime = 0;
+    int testCount = 0, testRemaining, testRequested = 0, success = 1, i;
+    long long frameCounter = 0;
+    const int sampleRate = 5;
+
+    for (i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--test")) {
+            if (i + 1 >= argc || !parseTestCount(argv[i + 1], &testCount)) {
+                printf("Invalid --test N value.\n");
+                return -1;
+            }
+            testRequested = 1;
+            i++;
+        } else if (!strncmp(argv[i], "--test=", 7)) {
+            if (!parseTestCount(argv[i] + 7, &testCount)) {
+                printf("Invalid --test N value.\n");
+                return -1;
+            }
+            testRequested = 1;
+        }
+    }
+    testRemaining = testCount;
 
     if (!glfwInit()) {
         printf("Failed to init GLFW.");
@@ -80,8 +114,8 @@ int main()
 #ifdef DEMO_MSAA
     glfwWindowHint(GLFW_SAMPLES, 4);
 #endif
-    window = glfwCreateWindow(1000, 600, "NanoVG", NULL, NULL);
-    //	window = glfwCreateWindow(1000, 600, "NanoVG", glfwGetPrimaryMonitor(), NULL);
+    window = glfwCreateWindow(1200, 1000, "NanoVG", NULL, NULL);
+    //	window = glfwCreateWindow(1200, 1000, "NanoVG", glfwGetPrimaryMonitor(), NULL);
     if (!window) {
         glfwTerminate();
         return -1;
@@ -112,12 +146,14 @@ int main()
 
     if (loadDemoData(vg, &data) == -1) return -1;
 
+    if (testRequested && testCount == 0) glfwSetWindowShouldClose(window, GL_TRUE);
+
     glfwSwapInterval(0);
 
     initGPUTimer(&gpuTimer);
 
     glfwSetTime(0);
-    prevt = glfwGetTime();
+    prevt = testRequested ? 0.0 : glfwGetTime();
 
     while (!glfwWindowShouldClose(window)) {
         double mx, my, t, dt;
@@ -125,17 +161,23 @@ int main()
         int fbWidth, fbHeight;
         float pxRatio;
         float gpuTimes[3];
-        int i, n;
+        int n;
 
-        t = glfwGetTime();
+        t = testRequested ? frameCounter / 30.0 : glfwGetTime();
         dt = t - prevt;
         prevt = t;
 
         startGPUTimer(&gpuTimer);
 
-        glfwGetCursorPos(window, &mx, &my);
         glfwGetWindowSize(window, &winWidth, &winHeight);
         glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+        if (testRequested) {
+            double angle = 2.0 * NVG_PI * testRemaining / (double)testCount;
+            mx = winWidth / 2.0f + cos(angle) * winWidth / 4.0f;
+            my = winHeight / 2.0f + sin(angle) * winHeight / 4.0f;
+        } else {
+            glfwGetCursorPos(window, &mx, &my);
+        }
         // Calculate pixel ration for hi-dpi devices.
         pxRatio = (float)fbWidth / (float)winWidth;
 
@@ -151,9 +193,11 @@ int main()
 
         renderDemo(vg, (float)mx, (float)my, (float)winWidth, (float)winHeight, (float)t, blowup, &data);
 
-        renderGraph(vg, 5, 5, &fps);
-        renderGraph(vg, 5 + 200 + 5, 5, &cpuGraph);
-        if (gpuTimer.supported) renderGraph(vg, 5 + 200 + 5 + 200 + 5, 5, &gpuGraph);
+        if (!testRequested) {
+            renderGraph(vg, 5, 5, &fps);
+            renderGraph(vg, 5 + 200 + 5, 5, &cpuGraph);
+            if (gpuTimer.supported) renderGraph(vg, 5 + 200 + 5 + 200 + 5, 5, &gpuGraph);
+        }
 
         nvgEndFrame(vg);
 
@@ -167,10 +211,18 @@ int main()
         n = stopGPUTimer(&gpuTimer, gpuTimes, 3);
         for (i = 0; i < n; i++) updateGraph(&gpuGraph, gpuTimes[i]);
 
-        if (screenshot) {
+        if (testRemaining > 0 && frameCounter % sampleRate == 0) {
+            char fileName[64];
+            printf("Capturing %d/%d at t = %0.2f sec\n", testCount - testRemaining + 1, testCount, t);
+            snprintf(fileName, sizeof(fileName), "screenshot%03d.png", testCount - testRemaining + 1);
+            success &= saveScreenShot(fbWidth, fbHeight, 0, fileName, 1);
+            testRemaining--;
+            if (testRemaining == 0) glfwSetWindowShouldClose(window, GL_TRUE);
+        } else if (screenshot && !testRequested) {
             screenshot = 0;
-            saveScreenShot(fbWidth, fbHeight, premult, "dump.png");
+            success &= saveScreenShot(fbWidth, fbHeight, premult, "dump.png", 0);
         }
+        frameCounter++;
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -180,10 +232,14 @@ int main()
 
     nvgDeleteGL3(vg);
 
-    printf("Average Frame Time: %.2f ms\n", getGraphAverage(&fps) * 1000.0f);
-    printf("          CPU Time: %.2f ms\n", getGraphAverage(&cpuGraph) * 1000.0f);
-    printf("          GPU Time: %.2f ms\n", getGraphAverage(&gpuGraph) * 1000.0f);
+    if (testRequested) {
+        printf(success ? "Test passed!\n" : "Test failed!\n");
+    } else {
+        printf("Average Frame Time: %.2f ms\n", getGraphAverage(&fps) * 1000.0f);
+        printf("          CPU Time: %.2f ms\n", getGraphAverage(&cpuGraph) * 1000.0f);
+        printf("          GPU Time: %.2f ms\n", getGraphAverage(&gpuGraph) * 1000.0f);
+    }
 
     glfwTerminate();
-    return 0;
+    return success ? EXIT_SUCCESS : EXIT_FAILURE;
 }

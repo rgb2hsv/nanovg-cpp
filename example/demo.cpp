@@ -16,6 +16,7 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#ifndef NANOVG_VULKAN
 #ifdef NANOVG_GLEW
 #include <GL/glew.h>
 #endif
@@ -23,6 +24,7 @@
 #include <SDL3/SDL_opengl.h>
 #elif !defined(NANOVG_USE_SDL3)
 #include <GLFW/glfw3.h>
+#endif
 #endif
 
 // Do not define the STB_IMAGE_IMPLEMENTATION twice
@@ -1774,18 +1776,27 @@ bool comparePreviousScreenShot(int nw, int nh, int premult, unsigned char* nimg,
     return ret;
 }
 
+#ifndef NANOVG_VULKAN
 bool saveScreenShot(int w, int h, int premult, const std::string& name, bool compare)
 {
-    bool ret = true;
     unsigned char* image = (unsigned char*)malloc(w * h * 4);
     if (image == NULL) return false;
 
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, image);
+    flipHorizontal(image, w, h, w * 4);
+    bool ret = saveScreenShotRGBA(w, h, premult, image, name, compare);
+    free(image);
+    return ret;
+}
+#endif
+
+bool saveScreenShotRGBA(int w, int h, int premult, unsigned char* image, const std::string& name, bool compare)
+{
+    bool ret = true;
     if (premult)
         unpremultiplyAlpha(image, w, h, w * 4);
     else
         setAlpha(image, w, h, w * 4, 255);
-    flipHorizontal(image, w, h, w * 4);
 
     std::string fileName = name;
     if (compare) {
@@ -1798,6 +1809,5 @@ bool saveScreenShot(int w, int h, int premult, const std::string& name, bool com
 
     printf("Saving screenshot to '%s'\n", fileName.c_str());
     stbi_write_png(fileName.c_str(), w, h, 4, image, w * 4);
-    free(image);
     return ret;
 }

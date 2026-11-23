@@ -1,6 +1,10 @@
 #include "nvg_window.hpp"
 #include "nvg_input.hpp"
 #include <SDL3/SDL.h>
+#ifdef NANOVG_VULKAN
+#include "nvg_window_vk.hpp"
+#include <SDL3/SDL_vulkan.h>
+#endif
 #include <stdlib.h>
 
 struct NvgWindow {
@@ -101,19 +105,25 @@ NvgWindow* nvgwin_create(int w, int h, const char* title, NvgwinProfile profile,
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
             break;
+        case NVGWIN_PROFILE_VULKAN:
+            break;
     }
 
-    SDL_Window* win = SDL_CreateWindow(title, w, h, SDL_WINDOW_OPENGL);
+    const bool vulkan = profile == NVGWIN_PROFILE_VULKAN;
+    SDL_Window* win = SDL_CreateWindow(title, w, h, vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL);
     if (!win) {
         report_sdl_error("SDL_CreateWindow");
         return nullptr;
     }
 
-    SDL_GLContext ctx = SDL_GL_CreateContext(win);
-    if (!ctx) {
-        report_sdl_error("SDL_GL_CreateContext");
-        SDL_DestroyWindow(win);
-        return nullptr;
+    SDL_GLContext ctx = nullptr;
+    if (!vulkan) {
+        ctx = SDL_GL_CreateContext(win);
+        if (!ctx) {
+            report_sdl_error("SDL_GL_CreateContext");
+            SDL_DestroyWindow(win);
+            return nullptr;
+        }
     }
 
     NvgWindow* nw = new NvgWindow{};
@@ -131,19 +141,19 @@ void nvgwin_destroy(NvgWindow* win)
 {
     if (!win) return;
     if (g_active_window == win) g_active_window = nullptr;
-    SDL_GL_DestroyContext(win->gl_ctx);
+    if (win->gl_ctx) SDL_GL_DestroyContext(win->gl_ctx);
     SDL_DestroyWindow(win->window);
     delete win;
 }
 
 void nvgwin_make_current(NvgWindow* win)
 {
-    SDL_GL_MakeCurrent(win->window, win->gl_ctx);
+    if (win->gl_ctx) SDL_GL_MakeCurrent(win->window, win->gl_ctx);
 }
 
 void nvgwin_swap_buffers(NvgWindow* win)
 {
-    SDL_GL_SwapWindow(win->window);
+    if (win->gl_ctx) SDL_GL_SwapWindow(win->window);
 }
 
 void nvgwin_poll_events(void)
@@ -224,3 +234,27 @@ void nvgwin_set_key_callback(NvgWindow* win, NvgwinKeyFn fn, void* user)
     win->key_cb = fn;
     win->key_user = user;
 }
+
+#ifdef NANOVG_VULKAN
+PFN_vkGetInstanceProcAddr nvgwin_vk_get_instance_proc_addr(void)
+{
+    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+}
+
+const char* const* nvgwin_vk_instance_extensions(uint32_t* count)
+{
+    Uint32 n = 0;
+    const char* const* exts = SDL_Vulkan_GetInstanceExtensions(&n);
+    *count = n;
+    return exts;
+}
+
+int nvgwin_vk_create_surface(NvgWindow* win, VkInstance instance, VkSurfaceKHR* surface)
+{
+    if (!SDL_Vulkan_CreateSurface(win->window, instance, nullptr, surface)) {
+        report_sdl_error("SDL_Vulkan_CreateSurface");
+        return -1;
+    }
+    return 0;
+}
+#endif
