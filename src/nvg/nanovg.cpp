@@ -33,6 +33,7 @@
 #include <span>
 #include <bit>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>

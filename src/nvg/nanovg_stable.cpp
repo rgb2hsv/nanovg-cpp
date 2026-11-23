@@ -98,6 +98,22 @@ nvg::PointMode toPointMode(int mode) noexcept
             return nvg::PointMode::Points;
     }
 }
+
+// Outside extern "C": returns a C++ type.
+nvg::Marker toCppMarker(NVGcontext* ctx, const NVGmarker& m)
+{
+    nvg::Marker out;
+    out.shape = m.shape >= NVG_MARKER_NONE && m.shape <= NVG_MARKER_CUSTOM ? static_cast<nvg::MarkerShape>(m.shape) : nvg::MarkerShape::None;
+    out.size = m.size;
+    out.orient = m.orient >= NVG_MARKER_ORIENT_AUTO && m.orient <= NVG_MARKER_ORIENT_FIXED ? static_cast<nvg::MarkerOrient>(m.orient) : nvg::MarkerOrient::Auto;
+    out.angle = m.angle;
+    if (m.draw != nullptr) {
+        auto* draw = m.draw;
+        void* uptr = m.uptr;
+        out.draw = [draw, uptr, ctx](nvg::Context&) { draw(ctx, uptr); };
+    }
+    return out;
+}
 }  // namespace
 
 extern "C" {
@@ -263,42 +279,24 @@ NVGmarker nvgMarker(int shape, float size)
     return m;
 }
 
-namespace
-{
-nvg::Marker toCpp(NVGcontext* ctx, const NVGmarker& m)
-{
-    nvg::Marker out;
-    out.shape = m.shape >= NVG_MARKER_NONE && m.shape <= NVG_MARKER_CUSTOM ? static_cast<nvg::MarkerShape>(m.shape) : nvg::MarkerShape::None;
-    out.size = m.size;
-    out.orient = m.orient >= NVG_MARKER_ORIENT_AUTO && m.orient <= NVG_MARKER_ORIENT_FIXED ? static_cast<nvg::MarkerOrient>(m.orient) : nvg::MarkerOrient::Auto;
-    out.angle = m.angle;
-    if (m.draw != nullptr) {
-        auto* draw = m.draw;
-        void* uptr = m.uptr;
-        out.draw = [draw, uptr, ctx](nvg::Context&) { draw(ctx, uptr); };
-    }
-    return out;
-}
-}  // namespace
-
 void nvgMarkerStart(NVGcontext* ctx, NVGmarker marker)
 {
-    ctx->markerStart(toCpp(ctx, marker));
+    ctx->markerStart(toCppMarker(ctx, marker));
 }
 
 void nvgMarkerMid(NVGcontext* ctx, NVGmarker marker)
 {
-    ctx->markerMid(toCpp(ctx, marker));
+    ctx->markerMid(toCppMarker(ctx, marker));
 }
 
 void nvgMarkerEnd(NVGcontext* ctx, NVGmarker marker)
 {
-    ctx->markerEnd(toCpp(ctx, marker));
+    ctx->markerEnd(toCppMarker(ctx, marker));
 }
 
 void nvgMarkers(NVGcontext* ctx, NVGmarker marker)
 {
-    ctx->markers(toCpp(ctx, marker));
+    ctx->markers(toCppMarker(ctx, marker));
 }
 
 void nvgLineCap(NVGcontext* ctx, int cap)
