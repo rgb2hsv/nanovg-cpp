@@ -38,7 +38,9 @@ jobs:
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DNANOVG_USE_SDL3=OFF
+        # No -G: CMake picks the newest Visual Studio on the runner, so image upgrades
+        # (e.g. windows-latest moving from VS 2022 to VS 2026) don't break configure.
+        run: cmake -S . -B build -A x64 -DNANOVG_USE_SDL3=OFF
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
