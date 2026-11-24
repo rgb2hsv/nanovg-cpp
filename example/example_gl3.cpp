@@ -114,7 +114,7 @@ int main(int argc, char** argv)
 #else
     const int msaa = 0;
 #endif
-    window = nvgwin_create(1200, 1000, "NanoVG", NVGWIN_PROFILE_GL3, msaa, 1);
+    window = nvgwin_create(1200, 860, "NanoVG", NVGWIN_PROFILE_GL3, msaa, 1);
     if (!window) {
         nvgwin_shutdown();
         return -1;

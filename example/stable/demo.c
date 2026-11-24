@@ -1126,7 +1126,7 @@ void drawWidths(NVGcontext* vg, float x, float y, float width)
 
     nvgSave(vg);
 
-    nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
+    nvgStrokeColor(vg, nvgRGBA(230, 230, 240, 255));
 
     for (i = 0; i < 20; i++) {
         float w = (i + 0.5f) * 0.1f;
@@ -1162,7 +1162,7 @@ void drawCaps(NVGcontext* vg, float x, float y, float width)
     nvgStrokeWidth(vg, lineWidth);
     for (i = 0; i < 3; i++) {
         nvgLineCap(vg, caps[i]);
-        nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
+        nvgStrokeColor(vg, nvgRGBA(230, 230, 240, 255));
         nvgBeginPath(vg);
         nvgMoveTo(vg, x, y + i * 10 + 5);
         nvgLineTo(vg, x + width, y + i * 10 + 5);
@@ -1268,6 +1268,7 @@ void drawScaledText(NVGcontext* vg, float x0, float y0, float t)
     nvgRestore(vg);
 }
 
+static NVGrect rect(float x, float y, float w, float h);
 static float drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title, const char* calls);
 
 // One tile of the classic demo: its place in the panel grid, the size of the design space its
@@ -1377,7 +1378,7 @@ static void classicLines(NVGcontext* vg, float mx, float my, float t, int blowup
     nvgLineStyle(vg, styles[(int)(t / 5.0f) % 3]);
     drawLines(vg, 10, 60, 600, 60, 10.0f, nvgRGBA(255, 153, 0, 255), t * 3);
     nvgLineStyle(vg, NVG_LINE_SOLID);
-    drawLines(vg, 10, 140, 600, 50, 17.0f, nvgRGBA(0, 0, 0, 160), t);
+    drawLines(vg, 10, 140, 600, 50, 17.0f, nvgRGBA(220, 220, 235, 160), t);
 }
 
 static void classicScissor(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
@@ -1431,6 +1432,9 @@ void renderClassicDemo(NVGcontext* vg, float x, float y, float width, float heig
     const float ch = (height - top - pad * rows) / rows;
     size_t i;
 
+    // Same panel background as the draw-calls panel below.
+    nvgFillColor(vg, nvgRGBA(36, 38, 46, 255));
+    nvgDrawRect(vg, rect(x, y, width, height), NVG_PAINT_FILL);
     if (cw <= 0.0f || ch <= 0.0f) return;
 
     for (i = 0; i < sizeof(tiles) / sizeof(tiles[0]); i++) {
@@ -1460,8 +1464,8 @@ void renderClassicDemo(NVGcontext* vg, float x, float y, float width, float heig
 
 void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, float t, int blowup, DemoData* data)
 {
-    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
-    const float drawCallsHeight = floorf(height * 0.4f);
+    // The classic demo uses the top 53% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = floorf(height * 0.47f);
     renderClassicDemo(vg, 0, 0, width, height - drawCallsHeight, mx, my, t, blowup, data);
     renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
 }
@@ -1502,12 +1506,12 @@ static float drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title, cons
 
     nvgFontSize(vg, 11.0f);
     nvgFontFace(vg, "sans");
-    nvgTextLineHeight(vg, 1.1f);
-    nvgFillColor(vg, nvgRGBA(160, 200, 255, 170));
-    nvgTextBoxBounds(vg, cell.x + 8, cell.y + 23, maxW, calls, NULL, b);
-    nvgTextBox(vg, cell.x + 8, cell.y + 23, maxW, calls, NULL);
     nvgTextLineHeight(vg, 1.0f);
-    return b[3] - cell.y + 4.0f;
+    nvgFillColor(vg, nvgRGBA(160, 200, 255, 170));
+    nvgTextBoxBounds(vg, cell.x + 8, cell.y + 19, maxW, calls, NULL, b);
+    nvgTextBox(vg, cell.x + 8, cell.y + 19, maxW, calls, NULL);
+    nvgTextLineHeight(vg, 1.0f);
+    return b[3] - cell.y + 2.0f;
 }
 
 static void demoRects(NVGcontext* vg, NVGrect c, float t, const DemoData* data)

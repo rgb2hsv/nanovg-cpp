@@ -1133,7 +1133,7 @@ void drawWidths(nvg::Context& vg, float x, float y, float width)
 
     vg.save();
 
-    vg.strokeColor(nvg::rgba(0, 0, 0, 255));
+    vg.strokeColor(nvg::rgba(230, 230, 240, 255));
 
     for (i = 0; i < 20; i++) {
         float w = (i + 0.5f) * 0.1f;
@@ -1169,7 +1169,7 @@ void drawCaps(nvg::Context& vg, float x, float y, float width)
     vg.strokeWidth(lineWidth);
     for (i = 0; i < 3; i++) {
         vg.lineCap(caps[i]);
-        vg.strokeColor(nvg::rgba(0, 0, 0, 255));
+        vg.strokeColor(nvg::rgba(230, 230, 240, 255));
         vg.beginPath();
         vg.moveTo(x, y + i * 10 + 5);
         vg.lineTo(x + width, y + i * 10 + 5);
@@ -1343,11 +1343,15 @@ static void classicLines(nvg::Context& vg, float mx, float my, float t, int blow
     vg.lineStyle(static_cast<int>(styles[(int)(t / 5.0f) % 3]));
     drawLines(vg, 10, 60, 600, 60, 10.0f, nvg::rgba(255, 153, 0, 255), t * 3);
     vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
-    drawLines(vg, 10, 140, 600, 50, 17.0f, nvg::rgba(0, 0, 0, 160), t);
+    drawLines(vg, 10, 140, 600, 50, 17.0f, nvg::rgba(220, 220, 235, 160), t);
 }
 
 void renderClassicDemo(nvg::Context& vg, float x, float y, float width, float height, float mx, float my, float t, int blowup, DemoData& data)
 {
+    // Same panel background as the draw-calls panel below.
+    vg.fillColor(nvg::rgba(36, 38, 46, 255));
+    vg.drawRect(nvg::Rect{x, y, width, height});
+
     using V = nvg::Context&;
     using D = DemoData&;
     static const ClassicTile tiles[] = {
@@ -1403,8 +1407,8 @@ void renderClassicDemo(nvg::Context& vg, float x, float y, float width, float he
 
 void renderDemo(nvg::Context& vg, float mx, float my, float width, float height, float t, int blowup, DemoData& data)
 {
-    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
-    const float drawCallsHeight = std::floor(height * 0.4f);
+    // The classic demo uses the top 53% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = std::floor(height * 0.47f);
     renderClassicDemo(vg, 0, 0, width, height - drawCallsHeight, mx, my, t, blowup, data);
     renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
 }
@@ -1426,18 +1430,18 @@ static float drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* 
     const float maxW = cell.w - 16.0f, titleW = vg.textBounds(0, 0, title, nullptr, nullptr);
     if (titleW > maxW && maxW > 0.0f) vg.fontSize(13.0f * maxW / titleW);
     vg.fillColor(nvg::rgba(255, 255, 255, 180));
-    vg.text(cell.x + 8, cell.y + 6, title, nullptr);
+    vg.text(cell.x + 8, cell.y + 4, title, nullptr);
     if (calls == nullptr || maxW <= 0.0f) return 0.0f;
 
     vg.fontSize(11.0f);
     vg.fontFace("sans");
-    vg.textLineHeight(1.1f);
+    vg.textLineHeight(1.0f);
     vg.fillColor(nvg::rgba(160, 200, 255, 170));
     std::array<float, 4> b{};
-    vg.textBoxBounds(cell.x + 8, cell.y + 23, maxW, calls, nullptr, b.data());
-    vg.textBox(cell.x + 8, cell.y + 23, maxW, calls, nullptr);
+    vg.textBoxBounds(cell.x + 8, cell.y + 19, maxW, calls, nullptr, b.data());
+    vg.textBox(cell.x + 8, cell.y + 19, maxW, calls, nullptr);
     vg.textLineHeight(1.0f);
-    return b[3] - cell.y + 4.0f;
+    return b[3] - cell.y + 2.0f;
 }
 
 static void demoRects(nvg::Context& vg, const nvg::Rect& c, float t)

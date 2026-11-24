@@ -23,7 +23,7 @@ This repository’s **`modernize-cpp`** branch extends upstream NanoVG with a C+
 The `example_gl3`, `example_vk`, `example_stable_gl3` and `example_stable_vk` binaries accept `--test N` (and `--test=N`) to run a fixed-frame capture path useful for CI (see `.cursor/skills/verify` in this repo). Each run writes `screenshotNNN.png` to the working directory and compares it against an existing file of the same name, so running two of them from the same directory checks one against the other (Vulkan against GL, or the stable C API against C++). The two agree to within 2/255 per channel, apart from occasional single rows where an edge falls exactly on a pixel center (GL and Vulkan resolve that tie differently).
 
 ## Screenshot
-<img width="1200" height="1000" alt="NanoVG++ demo: classic NanoVG demo tiles on top, Skia-style draw calls panel below" src="docs/demo.png" />
+<img width="1200" height="860" alt="NanoVG++ demo: classic NanoVG demo tiles on top, Skia-style draw calls panel below" src="docs/demo.png" />
 
 The demo is split into labeled tiles. The top panel is the classic NanoVG demo (widgets, eyes, color wheel, graph, text paragraph, line joins and caps, scissor, …), one tile per feature, each naming the draw calls it exercises; the bottom panel has one tile per Skia-style draw call and newer feature.
 

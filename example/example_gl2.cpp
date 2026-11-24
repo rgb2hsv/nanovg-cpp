@@ -76,7 +76,7 @@ int main()
     const int msaa = 0;
 #endif
 
-    window = nvgwin_create(1200, 1000, "NanoVG", NVGWIN_PROFILE_GL2, msaa, 0);
+    window = nvgwin_create(1200, 860, "NanoVG", NVGWIN_PROFILE_GL2, msaa, 0);
     if (!window) {
         nvgwin_shutdown();
         return -1;

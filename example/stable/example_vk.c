@@ -674,7 +674,7 @@ int main(int argc, char** argv)
     initGraph(&gpuGraph, GRAPH_RENDER_MS, "GPU Time");
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window = glfwCreateWindow(1200, 1000, "NanoVG (Vulkan, C API)", NULL, NULL);
+    window = glfwCreateWindow(1200, 860, "NanoVG (Vulkan, C API)", NULL, NULL);
     if (!window) {
         glfwTerminate();
         return -1;
