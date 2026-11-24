@@ -2023,7 +2023,7 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     enum { cols = 7, rows = 3, count = 21 };
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     const float designW = 240.0f, designH = 175.0f;
-    const float pad = 10.0f, top = 34.0f;
+    const float pad = 10.0f, top = 10.0f;
     const float cw = (width - pad * (cols + 1)) / cols;
     const float ch = (height - top - pad * rows) / rows;
     static const char* titles[count] = {
@@ -2038,18 +2038,12 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     float s;
     int i;
 
-    // Panel background and header.
+    // Panel background and top edge.
     nvgFillColor(vg, nvgRGBA(36, 38, 46, 255));
     nvgDrawRect(vg, rect(x, y, width, height), NVG_PAINT_FILL);
     nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 30));
     nvgStrokeWidth(vg, 1.0f);
     nvgDrawLine(vg, x, y + 0.5f, x + width, y + 0.5f);
-
-    nvgFontSize(vg, 18.0f);
-    nvgFontFace(vg, "sans-bold");
-    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 220));
-    nvgText(vg, x + 12, y + 18, "Skia-style draw calls", NULL);
 
     if (cw <= 0.0f || ch <= 0.0f) return;
     s = cw / designW < ch / designH ? cw / designW : ch / designH;

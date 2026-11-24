@@ -1917,23 +1917,17 @@ static void demoClear(nvg::Context& vg, const nvg::Rect& c, float t)
 
 void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float height, float t, DemoData& data)
 {
-    // Panel background and header.
+    // Panel background and top edge.
     vg.fillColor(nvg::rgba(36, 38, 46, 255));
     vg.drawRect(nvg::Rect{x, y, width, height});
     vg.strokeColor(nvg::rgba(255, 255, 255, 30));
     vg.strokeWidth(1.0f);
     vg.drawLine(x, y + 0.5f, x + width, y + 0.5f);
 
-    vg.fontSize(18.0f);
-    vg.fontFace("sans-bold");
-    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Middle));
-    vg.fillColor(nvg::rgba(255, 255, 255, 220));
-    vg.text(x + 12, y + 18, "Skia-style draw calls", nullptr);
-
     constexpr int cols = 7, rows = 3;
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     constexpr float designW = 240.0f, designH = 175.0f;
-    const float pad = 10.0f, top = 34.0f;
+    const float pad = 10.0f, top = 10.0f;
     const float cw = (width - pad * (cols + 1)) / cols;
     const float ch = (height - top - pad * rows) / rows;
     if (cw <= 0.0f || ch <= 0.0f) return;
