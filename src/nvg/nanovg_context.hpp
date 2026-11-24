@@ -85,6 +85,13 @@ struct State {
     int ndashes = 0;                                   // 0 = solid
     float dashOffset = 0.0f;
     std::array<Marker, 3> markers{};  // start, mid, end
+    float strokeOuterShadowX = 0.0f, strokeOuterShadowY = 0.0f, strokeOuterShadowBlur = 0.0f;
+    Color strokeOuterShadowColor{};  // alpha 0 = no shadow
+    float strokeInnerShadowX = 0.0f, strokeInnerShadowY = 0.0f, strokeInnerShadowBlur = 0.0f;
+    Color strokeInnerShadowColor{};  // alpha 0 = no shadow
+    float strokeOutlineWidth = 0.0f;
+    Color strokeOutlineColor{};
+    float strokeBlur = 0.0f;
     float alpha;
     std::array<float, 6> xform;
     Scissor scissor;
@@ -99,6 +106,7 @@ struct State {
     float fontDilate;
     int textAlign;
     int fontId;
+    TextFill textFill = TextFill::Color;
 };
 
 struct Point {
@@ -157,6 +165,7 @@ protected:
     size_t shadowImageIdx = 0;
     std::vector<float> shadowCoverage, shadowBlur;  // scratch buffers for building a mask
     std::vector<unsigned char> shadowPixels;
+    std::vector<float> distanceScratch;  // scratch for strokeDistanceCoords
 
     State& topState();
     const State& topState() const;
@@ -227,6 +236,10 @@ protected:
     void dashPaths(const float* dashes, int ndashes, float offset, int lineCap);
     void calculateJoins(float w, int lineJoin, float miterLimit);
     int expandStroke(float w, float fringe, int lineCap, int lineJoin, int lineStyle, float miterLimit);
+    // Rewrites the expanded stroke vertices' u, v, s, t as distance coordinates for a Gaussian-blurred
+    // stroke (Params::renderStrokeEffect): signed distance across the center line, distance along from
+    // the path's start and to its end (both grown by halfWidth for square caps; huge on closed paths), 0.
+    void strokeDistanceCoords(int lineCap, float halfWidth);
     int expandFill(float w, int lineJoin, float miterLimit);
     void flushTextTexture();
     int allocTextAtlas();

@@ -9,7 +9,9 @@
 #include "nanovg_context.hpp"
 #include "nanovg_detail.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <cmath>
 #include <vector>
 
@@ -601,6 +603,67 @@ int ContextImpl::expandStroke(float w, float fringe, int lineCap, int lineJoin, 
     return 1;
 }
 
+void ContextImpl::strokeDistanceCoords(int lineCap, float halfWidth)
+{
+    const float capShift = lineCap == static_cast<int>(LineCap::Square) ? halfWidth : 0.0f;
+    constexpr float kFar = 1e6f;  // "no end nearby": closed paths, and paths too short to measure
+    for (Path& path : cache->paths) {
+        if (path.stroke == nullptr || path.nstroke <= 0) continue;
+        const Point* pts = &cache->points[path.first];
+        const int n = path.count;
+        const bool closed = path.closed != 0;
+        const int nseg = closed ? n : n - 1;
+        if (nseg <= 0) {
+            for (int i = 0; i < path.nstroke; i++) {
+                Vertex& v = path.stroke[i];
+                v.u = std::hypot(v.x - pts[0].x, v.y - pts[0].y);
+                v.v = v.s = closed ? kFar : capShift;
+                v.t = 0.0f;
+            }
+            continue;
+        }
+        // Distance along the path at the start of each segment (Point::len is the length to the next point).
+        std::vector<float>& start = distanceScratch;
+        start.assign(static_cast<size_t>(nseg) + 1, 0.0f);
+        for (int j = 0; j < nseg; j++) start[static_cast<size_t>(j) + 1] = start[static_cast<size_t>(j)] + pts[j].len;
+        const float total = start[static_cast<size_t>(nseg)];
+
+        // The strip runs along the path, so each vertex is matched against the segments near the last
+        // match: the nearest one, unclamped past the open ends so cap vertices measure how far beyond them
+        // they are.
+        int k = 0;
+        for (int i = 0; i < path.nstroke; i++) {
+            Vertex& v = path.stroke[i];
+            float bestD2 = 1e30f, bestAcross = 0.0f, bestAlong = 0.0f;
+            int bestJ = k;
+            for (int j = std::max(0, k - 1); j <= std::min(nseg - 1, k + 3); j++) {
+                const Point& a = pts[j];
+                const float rx = v.x - a.x, ry = v.y - a.y;
+                const float along = rx * a.dx + ry * a.dy;
+                const float lo = (!closed && j == 0) ? -1e30f : 0.0f;
+                const float hi = (!closed && j == nseg - 1) ? 1e30f : a.len;
+                const float ca = std::clamp(along, lo, hi);
+                const float cx = rx - a.dx * ca, cy = ry - a.dy * ca;
+                const float d2 = cx * cx + cy * cy;
+                if (d2 < bestD2) {
+                    bestD2 = d2;
+                    // Signed by side (left of the direction is negative), measured to the nearest point.
+                    const float side = a.dx * ry - a.dy * rx;
+                    const float perp = std::sqrt(d2);
+                    bestAcross = ca == along ? side : (side < 0.0f ? -perp : perp);
+                    bestAlong = start[static_cast<size_t>(j)] + along;
+                    bestJ = j;
+                }
+            }
+            k = bestJ;
+            v.u = bestAcross;
+            v.v = closed ? kFar : bestAlong + capShift;
+            v.s = closed ? kFar : total - bestAlong + capShift;
+            v.t = 0.0f;
+        }
+    }
+}
+
 int ContextImpl::expandFill(float w, int lineJoin, float miterLimit)
 {
     std::vector<Vertex>& buf = cache->verts;
@@ -759,15 +822,21 @@ void ContextImpl::renderText(Vertex* verts, int nverts)
 {
     State& state = topState();
     Paint paint = state.fill;
-
-    // Render triangles.
-    paint.image = fontImages[fontImageIdx];
+    const int mask = fontImages[fontImageIdx];
 
     // Apply global alpha
     paint.innerColor.a *= state.alpha;
     paint.outerColor.a *= state.alpha;
 
-    params.renderTriangles(params.userPtr, &paint, state.compositeOperation, &state.scissor, verts, nverts, fringeWidth);
+    // A gradient (two colors, no image) needs the paint evaluated per pixel under the glyphs; a solid
+    // color keeps the plain textured path, which batches consecutive runs.
+    const bool gradient = paint.image == 0 && std::memcmp(&paint.innerColor, &paint.outerColor, sizeof(Color)) != 0;
+    if (state.textFill == TextFill::Paint && gradient && params.renderMaskedPaint) {
+        params.renderMaskedPaint(params.userPtr, &paint, mask, state.compositeOperation, &state.scissor, verts, nverts, fringeWidth);
+    } else {
+        paint.image = mask;
+        params.renderTriangles(params.userPtr, &paint, state.compositeOperation, &state.scissor, verts, nverts, fringeWidth);
+    }
 
     drawCallCount++;
     textTriCount += nverts / 3;

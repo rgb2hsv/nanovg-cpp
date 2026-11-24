@@ -70,8 +70,8 @@ int main()
     glfwWindowHint(GLFW_SAMPLES, 4);
 #endif
 
-    window = glfwCreateWindow(1200, 1000, "NanoVG", NULL, NULL);
-    //	window = glfwCreateWindow(1200, 1000, "NanoVG", glfwGetPrimaryMonitor(), NULL);
+    window = glfwCreateWindow(1200, 860, "NanoVG", NULL, NULL);
+    //	window = glfwCreateWindow(1200, 860, "NanoVG", glfwGetPrimaryMonitor(), NULL);
     if (!window) {
         glfwTerminate();
         return -1;

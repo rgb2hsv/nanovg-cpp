@@ -1133,7 +1133,7 @@ void drawWidths(nvg::Context& vg, float x, float y, float width)
 
     vg.save();
 
-    vg.strokeColor(nvg::rgba(0, 0, 0, 255));
+    vg.strokeColor(nvg::rgba(230, 230, 240, 255));
 
     for (i = 0; i < 20; i++) {
         float w = (i + 0.5f) * 0.1f;
@@ -1169,7 +1169,7 @@ void drawCaps(nvg::Context& vg, float x, float y, float width)
     vg.strokeWidth(lineWidth);
     for (i = 0; i < 3; i++) {
         vg.lineCap(caps[i]);
-        vg.strokeColor(nvg::rgba(0, 0, 0, 255));
+        vg.strokeColor(nvg::rgba(230, 230, 240, 255));
         vg.beginPath();
         vg.moveTo(x, y + i * 10 + 5);
         vg.lineTo(x + width, y + i * 10 + 5);
@@ -1276,63 +1276,35 @@ void drawScaledText(nvg::Context& vg, float x0, float y0, float t)
     vg.restore();
 }
 
-void renderDemo(nvg::Context& vg, float mx, float my, float width, float height, float t, int blowup, DemoData& data)
+// Draws a demo tile: background, title and, when given, a line or two naming the calls it exercises.
+// Returns the height of that header (the tile's content goes below it).
+static float drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title, const char* calls = nullptr);
+
+// One tile of the classic demo: its place in the panel grid, the size of the design space its
+// content is drawn in (scaled down to fit the tile), and the drawing.
+struct ClassicTile {
+    const char* title;
+    const char* calls;
+    int col, row, colSpan, rowSpan;
+    float designW, designH;
+    // mx, my: the mouse in the tile's design space.
+    void (*draw)(nvg::Context& vg, float mx, float my, float t, int blowup, DemoData& data);
+};
+
+static void classicWidgets(nvg::Context& vg, float mx, float my, float t, int blowup, DemoData& data)
 {
-    float x, y, popy;
-
-    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
-    const float drawCallsHeight = std::floor(height * 0.4f);
-    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
-    height -= drawCallsHeight;
-
-    drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
-    drawStylizedLines(vg, width - 245, 15, 180, 130);
-    drawParagraph(vg, width - 450, 50, 150, 100, mx, my);
-    drawGraph(vg, 0, height / 2, width, height / 2, t);
-    drawColorwheel(vg, width - 280, height - 320, 250.0f, 250.0f, t);
-
-    // Line joints
-
-    switch ((int)(t / 5.0f) % 3) {
-        case 0:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Dashed));
-            break;
-        case 1:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Dotted));
-            break;
-        case 2:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Glow));
-            break;
-        default:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
-    }
-    drawLines(vg, 100, height - 5, 800, 100, 10.0f, nvg::rgba(255, 153, 0, 255), t * 3);
-
-    vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
-    drawLines(vg, 120, height - 75, 600, 50, 17.0f, nvg::rgba(0, 0, 0, 160), t);
-
-    // Line caps
-    drawWidths(vg, 10, 50, 30);
-
-    // Line caps
-    drawCaps(vg, 10, 300, 30);
-
-    drawScissor(vg, 50, height - 80, t);
-
-    vg.save();
+    UNUSED(mx);
+    UNUSED(my);
     if (blowup) {
         vg.rotate(sinf(t * 0.3f) * 5.0f / 180.0f * (float)M_PI);
         vg.scale(2.0f, 2.0f);
     }
-
-    // Widgets
-    drawWindow(vg, "Widgets `n Stuff", 50, 50, 300, 400);
-    x = 60;
-    y = 95;
+    drawWindow(vg, "Widgets `n Stuff", 0, 0, 300, 400);
+    float x = 10, y = 45;
     drawSearchBox(vg, "Search", x, y, 280, 25);
     y += 40;
     drawDropDown(vg, "Effects", x, y, 280, 28);
-    popy = y + 14;
+    const float popy = y + 14;
     y += 45;
 
     // Form
@@ -1356,19 +1328,95 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
     drawButton(vg, ICON_TRASH, "Delete", x, y, 160, 28, nvg::rgba(128, 16, 8, 255));
     drawButton(vg, 0, "Cancel", x + 170, y, 110, 28, nvg::rgba(0, 0, 0, 0));
 
-    // Thumbnails box
-    drawThumbnails(vg, 365, popy - 30, 160, 300, data.images.data(), (int)data.images.size(), t);
+    // Thumbnails popup, pointing at the drop-down.
+    drawThumbnails(vg, 315, popy - 30, 160, 300, data.images.data(), (int)data.images.size(), t);
+}
 
-    vg.restore();
+static void classicLines(nvg::Context& vg, float mx, float my, float t, int blowup, DemoData& data)
+{
+    UNUSED(mx);
+    UNUSED(my);
+    UNUSED(blowup);
+    UNUSED(data);
+    // The line style cycles every 5 seconds.
+    static const nvg::LineStyle styles[] = {nvg::LineStyle::Dashed, nvg::LineStyle::Dotted, nvg::LineStyle::Glow};
+    vg.lineStyle(static_cast<int>(styles[(int)(t / 5.0f) % 3]));
+    drawLines(vg, 10, 60, 600, 60, 10.0f, nvg::rgba(255, 153, 0, 255), t * 3);
+    vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
+    drawLines(vg, 10, 140, 600, 50, 17.0f, nvg::rgba(220, 220, 235, 160), t);
+}
 
-    drawBezierCurve(vg, width - 380, height - 220, 100, t);
-    drawScaledText(vg, 450.0, 50, t);
+void renderClassicDemo(nvg::Context& vg, float x, float y, float width, float height, float mx, float my, float t, int blowup, DemoData& data)
+{
+    // Same panel background as the draw-calls panel below.
+    vg.fillColor(nvg::rgba(36, 38, 46, 255));
+    vg.drawRect(nvg::Rect{x, y, width, height});
+
+    using V = nvg::Context&;
+    using D = DemoData&;
+    static const ClassicTile tiles[] = {
+        {"Widgets & thumbnail popup", "roundedRect, boxGradient drop shadows, linear / radial gradients, icon-font text, imagePattern thumbnails clipped by scissor, arc spinners",
+         0, 0, 2, 3, 480, 410, classicWidgets},
+        {"Eyes", "ellipse with radial and linear gradients; LineStyle::Dashed frame", 2, 0, 1, 1, 190, 140,
+         [](V v, float lx, float ly, float tt, int, D) {
+             drawEyes(v, 20, 20, 150, 100, lx, ly, tt);
+             drawStylizedLines(v, 5, 5, 180, 130);
+         }},
+        {"Color wheel", "arc segments with linear gradients, rotate, boxGradient marker", 3, 0, 1, 1, 290, 250,
+         [](V v, float, float, float tt, int, D) { drawColorwheel(v, 0, 0, 250.0f, 250.0f, tt); }},
+        {"Graph", "bezierTo curve, linearGradient area fill, shadowed stroke, radialGradient points", 4, 0, 2, 1, 420, 150,
+         [](V v, float, float, float tt, int, D) { drawGraph(v, 10, 5, 400, 140, tt); }},
+        {"Text paragraph", "textBreakLines, textGlyphPositions caret hit-testing (hover), textBoxBounds, emoji fallback font, textBox tooltip", 2, 1, 1, 2, 170, 225,
+         [](V v, float lx, float ly, float, int, D) { drawParagraph(v, 10, 10, 150, 100, lx, ly); }},
+        {"Bezier curve", "bezierTo, stroked Solid then LineStyle::Dashed", 3, 1, 1, 1, 140, 140,
+         [](V v, float, float, float tt, int, D) { drawBezierCurve(v, 70, 70, 60, tt); }},
+        {"Line joins & caps", "Miter / Round / Bevel joins x Butt / Round / Square caps; LineStyle Dashed / Dotted / Glow, cycling", 4, 1, 2, 1, 620, 155,
+         classicLines},
+        {"Scissor", "scissor + intersectScissor under rotate", 3, 2, 1, 1, 130, 115,
+         [](V v, float, float, float tt, int, D) { drawScissor(v, 25, 60, tt); }},
+        {"Widths & caps", "strokeWidth 0.05 - 1.95 (hairlines), lineCap", 4, 2, 1, 1, 160, 225,
+         [](V v, float, float, float, int, D) {
+             drawWidths(v, 10, 10, 60);
+             drawCaps(v, 90, 10, 60);
+         }},
+        {"Scaled text", "text() under an animated scale", 5, 2, 1, 1, 220, 90,
+         [](V v, float, float, float tt, int, D) { drawScaledText(v, 110, 45, tt); }},
+    };
+
+    constexpr int cols = 6, rows = 3;
+    const float pad = 10.0f, top = 10.0f;
+    const float cw = (width - pad * (cols + 1)) / cols;
+    const float ch = (height - top - pad * rows) / rows;
+    if (cw <= 0.0f || ch <= 0.0f) return;
+    for (const ClassicTile& tile : tiles) {
+        const nvg::Rect c{x + pad + tile.col * (cw + pad), y + top + tile.row * (ch + pad), cw * tile.colSpan + pad * (tile.colSpan - 1), ch * tile.rowSpan + pad * (tile.rowSpan - 1)};
+        vg.save();
+        const float header = drawCallsCell(vg, c, tile.title, tile.calls);
+        // Scale the design space down (never up) to fit under the header, centered.
+        const float areaH = c.h - header - 4.0f;
+        const float s = std::min({1.0f, (c.w - 8.0f) / tile.designW, areaH / tile.designH});
+        if (s > 0.0f) {
+            const float ox = c.x + (c.w - tile.designW * s) * 0.5f, oy = c.y + header + (areaH - tile.designH * s) * 0.5f;
+            vg.translate(ox, oy);
+            vg.scale(s, s);
+            tile.draw(vg, (mx - ox) / s, (my - oy) / s, t, blowup, data);
+        }
+        vg.restore();
+    }
+}
+
+void renderDemo(nvg::Context& vg, float mx, float my, float width, float height, float t, int blowup, DemoData& data)
+{
+    // The classic demo uses the top 53% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = std::floor(height * 0.47f);
+    renderClassicDemo(vg, 0, 0, width, height - drawCallsHeight, mx, my, t, blowup, data);
+    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Draw-calls demo page: one cell per Skia-style immediate draw call.
 
-static void drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title)
+static float drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title, const char* calls)
 {
     vg.fillColor(nvg::rgba(255, 255, 255, 12));
     vg.strokeColor(nvg::rgba(255, 255, 255, 40));
@@ -1382,7 +1430,18 @@ static void drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* t
     const float maxW = cell.w - 16.0f, titleW = vg.textBounds(0, 0, title, nullptr, nullptr);
     if (titleW > maxW && maxW > 0.0f) vg.fontSize(13.0f * maxW / titleW);
     vg.fillColor(nvg::rgba(255, 255, 255, 180));
-    vg.text(cell.x + 8, cell.y + 6, title, nullptr);
+    vg.text(cell.x + 8, cell.y + 4, title, nullptr);
+    if (calls == nullptr || maxW <= 0.0f) return 0.0f;
+
+    vg.fontSize(11.0f);
+    vg.fontFace("sans");
+    vg.textLineHeight(1.0f);
+    vg.fillColor(nvg::rgba(160, 200, 255, 170));
+    std::array<float, 4> b{};
+    vg.textBoxBounds(cell.x + 8, cell.y + 19, maxW, calls, nullptr, b.data());
+    vg.textBox(cell.x + 8, cell.y + 19, maxW, calls, nullptr);
+    vg.textLineHeight(1.0f);
+    return b[3] - cell.y + 2.0f;
 }
 
 static void demoRects(nvg::Context& vg, const nvg::Rect& c, float t)
@@ -1646,6 +1705,143 @@ static void demoTextOuterShadow(nvg::Context& vg, const nvg::Rect& c, float t)
     vg.restore();
 }
 
+static void demoTextOnPath(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    vg.fontFace("sans-bold");
+    vg.strokeColor(nvg::rgba(255, 255, 255, 50));
+    vg.strokeWidth(1.0f);
+    // A wave whose bends change over time: the glyphs turn to follow it (method="align").
+    const float a = 22.0f * sinf(t * 1.3f);
+    vg.beginPath();
+    vg.moveTo(c.x + 8, c.y + 72);
+    vg.bezierTo(c.x + c.w * 0.3f, c.y + 72 - a * 2.0f, c.x + c.w * 0.7f, c.y + 72 + a * 2.0f, c.x + c.w - 8, c.y + 72);
+    vg.stroke();
+    vg.fontSize(19.0f);
+    vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Baseline));
+    vg.fillColor(nvg::rgba(255, 200, 60, 255));
+    nvg::TextPathOptions wave;
+    wave.startOffset = 50.0f;
+    wave.startOffsetPercent = true;
+    vg.textOnPath("Text that follows the curve", nullptr, wave);
+    // Two circles. Left: text bent glyph by glyph (method="stretch") on the outside; the start offset
+    // moves and wraps since the path is one closed subpath.
+    const float cy = c.y + 130, r = 30.0f;
+    vg.beginPath();
+    vg.circle(c.x + c.w * 0.27f, cy, r);
+    vg.stroke();
+    vg.fontSize(14.0f);
+    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Baseline));
+    vg.fillColor(nvg::rgba(80, 200, 255, 255));
+    nvg::TextPathOptions ring;
+    ring.startOffset = t * 30.0f;
+    ring.method = nvg::TextPathMethod::Stretch;
+    ring.baselineShift = -4.0f;
+    vg.textOnPath("round and round we go ", nullptr, ring);
+    // Right: side="right" runs the text the other way round, and Middle centers it on the stroke.
+    vg.beginPath();
+    vg.circle(c.x + c.w * 0.73f, cy, r);
+    vg.strokeColor(nvg::rgba(255, 120, 160, 90));
+    vg.strokeWidth(16.0f);
+    vg.stroke();
+    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Middle));
+    vg.fillColor(nvg::rgba(255, 255, 255, 255));
+    nvg::TextPathOptions back;
+    back.startOffset = t * 30.0f;
+    back.side = nvg::TextPathSide::Right;
+    vg.textOnPath("side right, middle * ", nullptr, back);
+    vg.restore();
+}
+
+static void demoTextFill(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    vg.fontFace("sans-bold");
+    vg.textFill(nvg::TextFill::Paint);
+    vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Middle));
+    // A linear gradient across the word's bounds, sliding sideways: the glyphs show the gradient as a
+    // rect filled under them would.
+    vg.fontSize(46.0f);
+    float b[4];
+    vg.textBounds(c.x + c.w * 0.5f, c.y + 68, "Gradient", nullptr, b);
+    const float shift = (b[2] - b[0]) * 0.5f * sinf(t);
+    vg.fillPaint(vg.linearGradient(b[0] + shift, 0, b[2] + shift, 0, nvg::rgba(255, 60, 120, 255), nvg::rgba(80, 200, 255, 255)));
+    vg.text(c.x + c.w * 0.5f, c.y + 68, "Gradient", nullptr);
+    // A radial gradient pulsing out from the middle of the second line, and a vertical one below it.
+    vg.fontSize(30.0f);
+    const float r = 20.0f + 30.0f * (0.5f + 0.5f * sinf(t * 1.7f));
+    vg.fillPaint(vg.radialGradient(c.x + c.w * 0.5f, c.y + 115, 4, r, nvg::rgba(255, 240, 120, 255), nvg::rgba(255, 90, 0, 255)));
+    vg.text(c.x + c.w * 0.5f, c.y + 115, "radial fill", nullptr);
+    vg.fillPaint(vg.linearGradient(0, c.y + 145, 0, c.y + 165, nvg::rgba(255, 255, 255, 255), nvg::rgba(90, 220, 120, 255)));
+    vg.fontSize(22.0f);
+    vg.text(c.x + c.w * 0.5f, c.y + 155, "vertical fade", nullptr);
+    vg.restore();
+}
+
+static void demoStrokeEffects(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // Four strokes of the same wave, one effect each, with labels.
+    auto wave = [&](float x, float y, float w) {
+        vg.beginPath();
+        vg.moveTo(x, y);
+        vg.bezierTo(x + w * 0.33f, y - 22, x + w * 0.66f, y + 22, x + w, y);
+    };
+    auto label = [&](float x, float y, const char* s) {
+        vg.fontSize(12.0f);
+        vg.fontFace("sans");
+        vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Top));
+        vg.fillColor(nvg::rgba(255, 255, 255, 150));
+        vg.text(x, y, s, nullptr);
+    };
+    const float w = c.w * 0.5f - 30;
+    vg.save();
+    vg.lineCap(static_cast<int>(nvg::LineCap::Round));
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Round));
+    vg.strokeWidth(9.0f);
+
+    // Outer shadow whose light source moves around (butt caps: the shadow's ends are a blurred box).
+    vg.save();
+    vg.lineCap(static_cast<int>(nvg::LineCap::Butt));
+    vg.strokeOuterShadow(4.0f * cosf(t), 4.0f + 2.0f * sinf(t), 4.0f, nvg::rgba(0, 0, 0, 230));
+    vg.strokeColor(nvg::rgba(255, 200, 60, 255));
+    wave(c.x + 15, c.y + 62, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + 15 + w * 0.5f, c.y + 86, "outer shadow");
+
+    // Glow: an unshifted, colored outer shadow, pulsing.
+    vg.save();
+    vg.strokeOuterShadow(0.0f, 0.0f, 10.0f + 4.0f * sinf(t * 2.0f), nvg::rgba(80, 200, 255, 255));
+    vg.strokeColor(nvg::rgba(230, 250, 255, 255));
+    vg.strokeWidth(5.0f);
+    wave(c.x + c.w * 0.5f + 15, c.y + 62, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 86, "glow");
+
+    // Inner shadow on a thick stroke: the edges facing away from the offset are shaded.
+    vg.save();
+    vg.strokeWidth(16.0f);
+    vg.strokeInnerShadow(2.5f * cosf(t), 2.5f * sinf(t), 2.0f, nvg::rgba(90, 20, 60, 255));
+    vg.strokeColor(nvg::rgba(255, 120, 170, 255));
+    wave(c.x + 15, c.y + 130, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + 15 + w * 0.5f, c.y + 154, "inner shadow");
+
+    // Outline under the stroke, with a soft blur on both.
+    vg.save();
+    vg.strokeOutline(2.5f, nvg::rgba(255, 255, 255, 255));
+    vg.strokeBlur(0.6f + 0.6f * sinf(t * 1.5f));
+    vg.strokeColor(nvg::rgba(90, 220, 120, 255));
+    vg.strokeWidth(7.0f);
+    wave(c.x + c.w * 0.5f + 15, c.y + 130, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 154, "outline + blur");
+    vg.restore();
+}
+
 static void demoPoints(nvg::Context& vg, const nvg::Rect& c, float t)
 {
     std::array<float, 2 * 16> wave{};
@@ -1789,23 +1985,17 @@ static void demoClear(nvg::Context& vg, const nvg::Rect& c, float t)
 
 void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float height, float t, DemoData& data)
 {
-    // Panel background and header.
+    // Panel background and top edge.
     vg.fillColor(nvg::rgba(36, 38, 46, 255));
     vg.drawRect(nvg::Rect{x, y, width, height});
     vg.strokeColor(nvg::rgba(255, 255, 255, 30));
     vg.strokeWidth(1.0f);
     vg.drawLine(x, y + 0.5f, x + width, y + 0.5f);
 
-    vg.fontSize(18.0f);
-    vg.fontFace("sans-bold");
-    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Middle));
-    vg.fillColor(nvg::rgba(255, 255, 255, 220));
-    vg.text(x + 12, y + 18, "Skia-style draw calls", nullptr);
-
-    constexpr int cols = 7, rows = 3;
+    constexpr int cols = 8, rows = 3;
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     constexpr float designW = 240.0f, designH = 175.0f;
-    const float pad = 10.0f, top = 34.0f;
+    const float pad = 10.0f, top = 10.0f;
     const float cw = (width - pad * (cols + 1)) / cols;
     const float ch = (height - top - pad * rows) / rows;
     if (cw <= 0.0f || ch <= 0.0f) return;
@@ -1835,6 +2025,9 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
         {"clear", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoClear(v, c, tt); }},
         {"drawGrid", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoGrid(v, c, tt); }},
         {"textOuterShadow / Inner", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOuterShadow(v, c, tt); }},
+        {"textOnPath", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOnPath(v, c, tt); }},
+        {"textFill(Paint): gradient text", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextFill(v, c, tt); }},
+        {"strokeOuterShadow / Inner / Outline", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoStrokeEffects(v, c, tt); }},
     };
 
     static_assert(std::size(entries) <= cols * rows);

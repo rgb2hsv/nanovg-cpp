@@ -1126,7 +1126,7 @@ void drawWidths(NVGcontext* vg, float x, float y, float width)
 
     nvgSave(vg);
 
-    nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
+    nvgStrokeColor(vg, nvgRGBA(230, 230, 240, 255));
 
     for (i = 0; i < 20; i++) {
         float w = (i + 0.5f) * 0.1f;
@@ -1162,7 +1162,7 @@ void drawCaps(NVGcontext* vg, float x, float y, float width)
     nvgStrokeWidth(vg, lineWidth);
     for (i = 0; i < 3; i++) {
         nvgLineCap(vg, caps[i]);
-        nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
+        nvgStrokeColor(vg, nvgRGBA(230, 230, 240, 255));
         nvgBeginPath(vg);
         nvgMoveTo(vg, x, y + i * 10 + 5);
         nvgLineTo(vg, x + width, y + i * 10 + 5);
@@ -1268,59 +1268,31 @@ void drawScaledText(NVGcontext* vg, float x0, float y0, float t)
     nvgRestore(vg);
 }
 
-void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, float t, int blowup, DemoData* data)
+static NVGrect rect(float x, float y, float w, float h);
+static float drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title, const char* calls);
+
+// One tile of the classic demo: its place in the panel grid, the size of the design space its
+// content is drawn in (scaled down to fit the tile), and the drawing (mx, my: the mouse in the tile's
+// design space).
+typedef void (*ClassicTileFn)(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data);
+typedef struct ClassicTile {
+    const char* title;
+    const char* calls;
+    int col, row, colSpan, rowSpan;
+    float designW, designH;
+    ClassicTileFn draw;
+} ClassicTile;
+
+static void classicWidgets(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
 {
-    float x, y, popy;
-
-    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
-    const float drawCallsHeight = floorf(height * 0.4f);
-    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
-    height -= drawCallsHeight;
-
-    drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
-    drawStylizedLines(vg, width - 245, 15, 180, 130);
-    drawParagraph(vg, width - 450, 50, 150, 100, mx, my);
-    drawGraph(vg, 0, height / 2, width, height / 2, t);
-    drawColorwheel(vg, width - 280, height - 320, 250.0f, 250.0f, t);
-
-    // Line joints
-
-    switch ((int)(t / 5.0) % 3) {
-        case 0:
-            nvgLineStyle(vg, NVG_LINE_DASHED);
-            break;
-        case 1:
-            nvgLineStyle(vg, NVG_LINE_DOTTED);
-            break;
-        case 2:
-            nvgLineStyle(vg, NVG_LINE_GLOW);
-            break;
-        default:
-            nvgLineStyle(vg, NVG_LINE_SOLID);
-    }
-    drawLines(vg, 100, height - 5, 800, 100, 10.0f, nvgRGBA(255, 153, 0, 255), t * 3);
-
-    nvgLineStyle(vg, NVG_LINE_SOLID);
-    drawLines(vg, 120, height - 75, 600, 50, 17.0f, nvgRGBA(0, 0, 0, 160), t);
-
-    // Line caps
-    drawWidths(vg, 10, 50, 30);
-
-    // Line caps
-    drawCaps(vg, 10, 300, 30);
-
-    drawScissor(vg, 50, height - 80, t);
-
-    nvgSave(vg);
+    float x = 10, y = 45, popy;
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
     if (blowup) {
         nvgRotate(vg, sinf(t * 0.3f) * 5.0f / 180.0f * NVG_PI);
         nvgScale(vg, 2.0f, 2.0f);
     }
-
-    // Widgets
-    drawWindow(vg, "Widgets `n Stuff", 50, 50, 300, 400);
-    x = 60;
-    y = 95;
+    drawWindow(vg, "Widgets `n Stuff", 0, 0, 300, 400);
     drawSearchBox(vg, "Search", x, y, 280, 25);
     y += 40;
     drawDropDown(vg, "Effects", x, y, 280, 28);
@@ -1348,13 +1320,154 @@ void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, f
     drawButton(vg, ICON_TRASH, "Delete", x, y, 160, 28, nvgRGBA(128, 16, 8, 255));
     drawButton(vg, 0, "Cancel", x + 170, y, 110, 28, nvgRGBA(0, 0, 0, 0));
 
-    // Thumbnails box
-    drawThumbnails(vg, 365, popy - 30, 160, 300, data->images, 12, t);
+    // Thumbnails popup, pointing at the drop-down.
+    drawThumbnails(vg, 315, popy - 30, 160, 300, data->images, 12, t);
+}
 
-    nvgRestore(vg);
+static void classicEyes(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawEyes(vg, 20, 20, 150, 100, mx, my, t);
+    drawStylizedLines(vg, 5, 5, 180, 130);
+}
 
-    drawBezierCurve(vg, width - 380, height - 220, 100, t);
-    drawScaledText(vg, 450.0, 50, t);
+static void classicColorwheel(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawColorwheel(vg, 0, 0, 250.0f, 250.0f, t);
+}
+
+static void classicGraph(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawGraph(vg, 10, 5, 400, 140, t);
+}
+
+static void classicParagraph(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(t);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawParagraph(vg, 10, 10, 150, 100, mx, my);
+}
+
+static void classicBezier(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawBezierCurve(vg, 70, 70, 60, t);
+}
+
+static void classicLines(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    static const int styles[3] = {NVG_LINE_DASHED, NVG_LINE_DOTTED, NVG_LINE_GLOW};
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    // The line style cycles every 5 seconds.
+    nvgLineStyle(vg, styles[(int)(t / 5.0f) % 3]);
+    drawLines(vg, 10, 60, 600, 60, 10.0f, nvgRGBA(255, 153, 0, 255), t * 3);
+    nvgLineStyle(vg, NVG_LINE_SOLID);
+    drawLines(vg, 10, 140, 600, 50, 17.0f, nvgRGBA(220, 220, 235, 160), t);
+}
+
+static void classicScissor(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawScissor(vg, 25, 60, t);
+}
+
+static void classicWidthsCaps(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(t);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawWidths(vg, 10, 10, 60);
+    drawCaps(vg, 90, 10, 60);
+}
+
+static void classicScaledText(NVGcontext* vg, float mx, float my, float t, int blowup, DemoData* data)
+{
+    NVG_NOTUSED(mx);
+    NVG_NOTUSED(my);
+    NVG_NOTUSED(blowup);
+    NVG_NOTUSED(data);
+    drawScaledText(vg, 110, 45, t);
+}
+
+void renderClassicDemo(NVGcontext* vg, float x, float y, float width, float height, float mx, float my, float t, int blowup, DemoData* data)
+{
+    static const ClassicTile tiles[] = {
+        {"Widgets & thumbnail popup", "roundedRect, boxGradient drop shadows, linear / radial gradients, icon-font text, imagePattern thumbnails clipped by scissor, arc spinners",
+         0, 0, 2, 3, 480, 410, classicWidgets},
+        {"Eyes", "ellipse with radial and linear gradients; LineStyle::Dashed frame", 2, 0, 1, 1, 190, 140, classicEyes},
+        {"Color wheel", "arc segments with linear gradients, rotate, boxGradient marker", 3, 0, 1, 1, 290, 250, classicColorwheel},
+        {"Graph", "bezierTo curve, linearGradient area fill, shadowed stroke, radialGradient points", 4, 0, 2, 1, 420, 150, classicGraph},
+        {"Text paragraph", "textBreakLines, textGlyphPositions caret hit-testing (hover), textBoxBounds, emoji fallback font, textBox tooltip", 2, 1, 1, 2, 170, 225,
+         classicParagraph},
+        {"Bezier curve", "bezierTo, stroked Solid then LineStyle::Dashed", 3, 1, 1, 1, 140, 140, classicBezier},
+        {"Line joins & caps", "Miter / Round / Bevel joins x Butt / Round / Square caps; LineStyle Dashed / Dotted / Glow, cycling", 4, 1, 2, 1, 620, 155, classicLines},
+        {"Scissor", "scissor + intersectScissor under rotate", 3, 2, 1, 1, 130, 115, classicScissor},
+        {"Widths & caps", "strokeWidth 0.05 - 1.95 (hairlines), lineCap", 4, 2, 1, 1, 160, 225, classicWidthsCaps},
+        {"Scaled text", "text() under an animated scale", 5, 2, 1, 1, 220, 90, classicScaledText},
+    };
+    enum { cols = 6, rows = 3 };
+    const float pad = 10.0f, top = 10.0f;
+    const float cw = (width - pad * (cols + 1)) / cols;
+    const float ch = (height - top - pad * rows) / rows;
+    size_t i;
+
+    // Same panel background as the draw-calls panel below.
+    nvgFillColor(vg, nvgRGBA(36, 38, 46, 255));
+    nvgDrawRect(vg, rect(x, y, width, height), NVG_PAINT_FILL);
+    if (cw <= 0.0f || ch <= 0.0f) return;
+
+    for (i = 0; i < sizeof(tiles) / sizeof(tiles[0]); i++) {
+        const ClassicTile* tile = &tiles[i];
+        NVGrect c;
+        float header, areaH, s;
+        c.x = x + pad + tile->col * (cw + pad);
+        c.y = y + top + tile->row * (ch + pad);
+        c.w = cw * tile->colSpan + pad * (tile->colSpan - 1);
+        c.h = ch * tile->rowSpan + pad * (tile->rowSpan - 1);
+        nvgSave(vg);
+        header = drawCallsCell(vg, c, tile->title, tile->calls);
+        // Scale the design space down (never up) to fit under the header, centered.
+        areaH = c.h - header - 4.0f;
+        s = 1.0f;
+        if ((c.w - 8.0f) / tile->designW < s) s = (c.w - 8.0f) / tile->designW;
+        if (areaH / tile->designH < s) s = areaH / tile->designH;
+        if (s > 0.0f) {
+            const float ox = c.x + (c.w - tile->designW * s) * 0.5f, oy = c.y + header + (areaH - tile->designH * s) * 0.5f;
+            nvgTranslate(vg, ox, oy);
+            nvgScale(vg, s, s);
+            tile->draw(vg, (mx - ox) / s, (my - oy) / s, t, blowup, data);
+        }
+        nvgRestore(vg);
+    }
+}
+
+void renderDemo(NVGcontext* vg, float mx, float my, float width, float height, float t, int blowup, DemoData* data)
+{
+    // The classic demo uses the top 53% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = floorf(height * 0.47f);
+    renderClassicDemo(vg, 0, 0, width, height - drawCallsHeight, mx, my, t, blowup, data);
+    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1370,10 +1483,12 @@ static NVGrect rect(float x, float y, float w, float h)
     return r;
 }
 
-static void drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title)
+// Draws a demo tile: background, title and, when given, a line or two naming the calls it exercises.
+// Returns the height of that header (the tile's content goes below it).
+static float drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title, const char* calls)
 {
     const float maxW = cell.w - 16.0f;
-    float titleW;
+    float titleW, b[4];
     nvgFillColor(vg, nvgRGBA(255, 255, 255, 12));
     nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 40));
     nvgStrokeWidth(vg, 1.0f);
@@ -1387,6 +1502,16 @@ static void drawCallsCell(NVGcontext* vg, NVGrect cell, const char* title)
     if (titleW > maxW && maxW > 0.0f) nvgFontSize(vg, 13.0f * maxW / titleW);
     nvgFillColor(vg, nvgRGBA(255, 255, 255, 180));
     nvgText(vg, cell.x + 8, cell.y + 6, title, NULL);
+    if (calls == NULL || maxW <= 0.0f) return 0.0f;
+
+    nvgFontSize(vg, 11.0f);
+    nvgFontFace(vg, "sans");
+    nvgTextLineHeight(vg, 1.0f);
+    nvgFillColor(vg, nvgRGBA(160, 200, 255, 170));
+    nvgTextBoxBounds(vg, cell.x + 8, cell.y + 19, maxW, calls, NULL, b);
+    nvgTextBox(vg, cell.x + 8, cell.y + 19, maxW, calls, NULL);
+    nvgTextLineHeight(vg, 1.0f);
+    return b[3] - cell.y + 2.0f;
 }
 
 static void demoRects(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
@@ -1672,6 +1797,142 @@ static void demoTextOuterShadow(NVGcontext* vg, NVGrect c, float t, const DemoDa
     nvgRestore(vg);
 }
 
+static void demoTextOnPath(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    float a, cy, r;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgFontFace(vg, "sans-bold");
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 50));
+    nvgStrokeWidth(vg, 1.0f);
+    // A wave whose bends change over time: the glyphs turn to follow it (method="align").
+    a = 22.0f * sinf(t * 1.3f);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, c.x + 8, c.y + 72);
+    nvgBezierTo(vg, c.x + c.w * 0.3f, c.y + 72 - a * 2.0f, c.x + c.w * 0.7f, c.y + 72 + a * 2.0f, c.x + c.w - 8, c.y + 72);
+    nvgStroke(vg);
+    nvgFontSize(vg, 19.0f);
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
+    nvgFillColor(vg, nvgRGBA(255, 200, 60, 255));
+    nvgTextOnPath(vg, "Text that follows the curve", NULL, 50.0f, 0.0f, NVG_TEXTPATH_PERCENT);
+    // Two circles. Left: text bent glyph by glyph (method="stretch") on the outside; the start offset
+    // moves and wraps since the path is one closed subpath.
+    cy = c.y + 130;
+    r = 30.0f;
+    nvgBeginPath(vg);
+    nvgCircle(vg, c.x + c.w * 0.27f, cy, r);
+    nvgStroke(vg);
+    nvgFontSize(vg, 14.0f);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_BASELINE);
+    nvgFillColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgTextOnPath(vg, "round and round we go ", NULL, t * 30.0f, -4.0f, NVG_TEXTPATH_STRETCH);
+    // Right: side="right" runs the text the other way round, and Middle centers it on the stroke.
+    nvgBeginPath(vg);
+    nvgCircle(vg, c.x + c.w * 0.73f, cy, r);
+    nvgStrokeColor(vg, nvgRGBA(255, 120, 160, 90));
+    nvgStrokeWidth(vg, 16.0f);
+    nvgStroke(vg);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+    nvgTextOnPath(vg, "side right, middle * ", NULL, t * 30.0f, 0.0f, NVG_TEXTPATH_RIGHT);
+    nvgRestore(vg);
+}
+
+static void demoTextFill(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    float b[4], shift, r;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgFontFace(vg, "sans-bold");
+    nvgTextFill(vg, NVG_TEXT_FILL_PAINT);
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    // A linear gradient across the word's bounds, sliding sideways: the glyphs show the gradient as a
+    // rect filled under them would.
+    nvgFontSize(vg, 46.0f);
+    nvgTextBounds(vg, c.x + c.w * 0.5f, c.y + 68, "Gradient", NULL, b);
+    shift = (b[2] - b[0]) * 0.5f * sinf(t);
+    nvgFillPaint(vg, nvgLinearGradient(vg, b[0] + shift, 0, b[2] + shift, 0, nvgRGBA(255, 60, 120, 255), nvgRGBA(80, 200, 255, 255)));
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 68, "Gradient", NULL);
+    // A radial gradient pulsing out from the middle of the second line, and a vertical one below it.
+    nvgFontSize(vg, 30.0f);
+    r = 20.0f + 30.0f * (0.5f + 0.5f * sinf(t * 1.7f));
+    nvgFillPaint(vg, nvgRadialGradient(vg, c.x + c.w * 0.5f, c.y + 115, 4, r, nvgRGBA(255, 240, 120, 255), nvgRGBA(255, 90, 0, 255)));
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 115, "radial fill", NULL);
+    nvgFillPaint(vg, nvgLinearGradient(vg, 0, c.y + 145, 0, c.y + 165, nvgRGBA(255, 255, 255, 255), nvgRGBA(90, 220, 120, 255)));
+    nvgFontSize(vg, 22.0f);
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 155, "vertical fade", NULL);
+    nvgRestore(vg);
+}
+
+static void strokeEffectsWave(NVGcontext* vg, float x, float y, float w)
+{
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, x, y);
+    nvgBezierTo(vg, x + w * 0.33f, y - 22, x + w * 0.66f, y + 22, x + w, y);
+}
+
+static void strokeEffectsLabel(NVGcontext* vg, float x, float y, const char* s)
+{
+    nvgFontSize(vg, 12.0f);
+    nvgFontFace(vg, "sans");
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 150));
+    nvgText(vg, x, y, s, NULL);
+}
+
+static void demoStrokeEffects(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // Four strokes of the same wave, one effect each, with labels.
+    const float w = c.w * 0.5f - 30;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeWidth(vg, 9.0f);
+
+    // Outer shadow whose light source moves around (butt caps: the shadow's ends are a blurred box).
+    nvgSave(vg);
+    nvgLineCap(vg, NVG_BUTT);
+    nvgStrokeOuterShadow(vg, 4.0f * cosf(t), 4.0f + 2.0f * sinf(t), 4.0f, nvgRGBA(0, 0, 0, 230));
+    nvgStrokeColor(vg, nvgRGBA(255, 200, 60, 255));
+    strokeEffectsWave(vg, c.x + 15, c.y + 62, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + 15 + w * 0.5f, c.y + 86, "outer shadow");
+
+    // Glow: an unshifted, colored outer shadow, pulsing.
+    nvgSave(vg);
+    nvgStrokeOuterShadow(vg, 0.0f, 0.0f, 10.0f + 4.0f * sinf(t * 2.0f), nvgRGBA(80, 200, 255, 255));
+    nvgStrokeColor(vg, nvgRGBA(230, 250, 255, 255));
+    nvgStrokeWidth(vg, 5.0f);
+    strokeEffectsWave(vg, c.x + c.w * 0.5f + 15, c.y + 62, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 86, "glow");
+
+    // Inner shadow on a thick stroke: the edges facing away from the offset are shaded.
+    nvgSave(vg);
+    nvgStrokeWidth(vg, 16.0f);
+    nvgStrokeInnerShadow(vg, 2.5f * cosf(t), 2.5f * sinf(t), 2.0f, nvgRGBA(90, 20, 60, 255));
+    nvgStrokeColor(vg, nvgRGBA(255, 120, 170, 255));
+    strokeEffectsWave(vg, c.x + 15, c.y + 130, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + 15 + w * 0.5f, c.y + 154, "inner shadow");
+
+    // Outline under the stroke, with a soft blur on both.
+    nvgSave(vg);
+    nvgStrokeOutline(vg, 2.5f, nvgRGBA(255, 255, 255, 255));
+    nvgStrokeBlur(vg, 0.6f + 0.6f * sinf(t * 1.5f));
+    nvgStrokeColor(vg, nvgRGBA(90, 220, 120, 255));
+    nvgStrokeWidth(vg, 7.0f);
+    strokeEffectsWave(vg, c.x + c.w * 0.5f + 15, c.y + 130, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 154, "outline + blur");
+    nvgRestore(vg);
+}
+
 static void demoPoints(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
 {
     float wave[2 * 16];
@@ -1832,36 +2093,30 @@ typedef void (*DrawCallsDemoFn)(NVGcontext* vg, NVGrect c, float t, const DemoDa
 
 void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float height, float t, DemoData* data)
 {
-    enum { cols = 7, rows = 3, count = 19 };
+    enum { cols = 8, rows = 3, count = 22 };
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     const float designW = 240.0f, designH = 175.0f;
-    const float pad = 10.0f, top = 34.0f;
+    const float pad = 10.0f, top = 10.0f;
     const float cw = (width - pad * (cols + 1)) / cols;
     const float ch = (height - top - pad * rows) / rows;
     static const char* titles[count] = {
         "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawArrow", "strokeDashArray", "markerStart / Mid / End",
         "ellipticalArcTo / Arc", "drawRoundRect(rx, ry)", "drawPoints / drawPoint", "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine",
-        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner",
+        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner", "textOnPath", "textFill(Paint): gradient text", "strokeOuterShadow / Inner / Outline",
     };
     static const DrawCallsDemoFn draws[count] = {
         demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoArrows, demoDashes, demoMarkers, demoEllipticalArcs, demoEllipticalCorners, demoPoints, demoPolygon,
-        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow,
+        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow, demoTextOnPath, demoTextFill, demoStrokeEffects,
     };
     float s;
     int i;
 
-    // Panel background and header.
+    // Panel background and top edge.
     nvgFillColor(vg, nvgRGBA(36, 38, 46, 255));
     nvgDrawRect(vg, rect(x, y, width, height), NVG_PAINT_FILL);
     nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 30));
     nvgStrokeWidth(vg, 1.0f);
     nvgDrawLine(vg, x, y + 0.5f, x + width, y + 0.5f);
-
-    nvgFontSize(vg, 18.0f);
-    nvgFontFace(vg, "sans-bold");
-    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 220));
-    nvgText(vg, x + 12, y + 18, "Skia-style draw calls", NULL);
 
     if (cw <= 0.0f || ch <= 0.0f) return;
     s = cw / designW < ch / designH ? cw / designW : ch / designH;
@@ -1869,7 +2124,7 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     for (i = 0; i < count; i++) {
         const NVGrect c = rect(x + pad + (i % cols) * (cw + pad), y + top + (i / cols) * (ch + pad), cw, ch);
         nvgSave(vg);
-        drawCallsCell(vg, c, titles[i]);
+        drawCallsCell(vg, c, titles[i], NULL);
         // Center the scaled design-space box in the cell.
         nvgTranslate(vg, c.x + (cw - designW * s) * 0.5f, c.y + (ch - designH * s) * 0.5f);
         nvgScale(vg, s, s);

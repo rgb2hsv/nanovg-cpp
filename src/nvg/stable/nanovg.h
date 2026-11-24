@@ -369,6 +369,17 @@ void nvgMarkerEnd(NVGcontext* ctx, NVGmarker marker);
 // Sets start, mid and end at once, like the SVG marker shorthand.
 void nvgMarkers(NVGcontext* ctx, NVGmarker marker);
 
+// Stroke effects matching the text ones, applied by every stroke in local units and saved with the state.
+// See nvg::Context::strokeOuterShadow and the calls after it.
+// Soft shadow under the stroke (no offset + bright color = glow); zero alpha = off.
+void nvgStrokeOuterShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color);
+// Inner shadow over the stroke (needs NVGparams.renderStrokeEffect); zero alpha = off.
+void nvgStrokeInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color);
+// Outline of the given width around the stroke, drawn under it; zero width or alpha = off.
+void nvgStrokeOutline(NVGcontext* ctx, float width, NVGcolor color);
+// Blurs the stroke's edges (and outline); 0 = sharp.
+void nvgStrokeBlur(NVGcontext* ctx, float blur);
+
 // Sets how the end of the line (cap) is drawn,
 // Can be one of: NVG_BUTT (default), NVG_ROUND, NVG_SQUARE.
 void nvgLineCap(NVGcontext* ctx, int cap);
@@ -775,6 +786,16 @@ void nvgTextInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blu
 // Sets the dilation of current text style.
 void nvgFontDilate(NVGcontext* ctx, float dilate);
 
+// How text is colored by the fill paint. Mirrors nvg::TextFill.
+enum NVGtextFill {
+    NVG_TEXT_FILL_COLOR = 0,  // The fill paint's inner color only (default, classic NanoVG).
+    NVG_TEXT_FILL_PAINT = 1,  // The whole fill paint: a gradient runs across the glyphs as across a rect filled under them.
+};
+
+// Selects how nvgText / nvgTextBox / nvgTextOnPath glyphs are colored by the fill paint (an NVGtextFill).
+// Build the gradient from nvgTextBounds to span the string. See nvg::Context::textFill.
+void nvgTextFill(NVGcontext* ctx, int mode);
+
 // Sets the letter spacing of current text style.
 void nvgTextLetterSpacing(NVGcontext* ctx, float spacing);
 
@@ -809,6 +830,20 @@ float nvgText(NVGcontext* ctx, float x, float y, const char* string, const char*
 // White space is stripped at the beginning of the rows, the text is split at word boundaries or when new-line characters are encountered.
 // Words longer than the max width are slit at nearest character (i.e. no hyphenation).
 void nvgTextBox(NVGcontext* ctx, float x, float y, float breakRowWidth, const char* string, const char* end);
+
+// Flags for nvgTextOnPath, mirroring the SVG <textPath> attributes (see nvg::TextPathOptions).
+enum NVGtextPathFlags {
+    NVG_TEXTPATH_PERCENT = 1 << 0,  // startOffset is a percentage (0..100) of the path's length.
+    NVG_TEXTPATH_RIGHT = 1 << 1,    // side="right": follow the path in reverse, text on the other side.
+    NVG_TEXTPATH_STRETCH = 1 << 2,  // method="stretch": bend each glyph along the path instead of rotating it rigidly.
+};
+
+// Draws text along the current path, like SVG <textPath>: each glyph is placed at its advance midpoint's
+// distance along the path and rotated to follow the path there. startOffset is the distance (local
+// units, or a percentage with NVG_TEXTPATH_PERCENT) of the text anchor set by the horizontal text align;
+// baselineShift moves the glyphs along the path's normal (positive = down). The path is not drawn and
+// stays current. Returns the distance along the path just past the last glyph. See nvg::Context::textOnPath.
+float nvgTextOnPath(NVGcontext* ctx, const char* string, const char* end, float startOffset, float baselineShift, int flags);
 
 // Measures the specified text string. Parameter bounds should be a pointer to float[4],
 // if the bounding box of the text should be returned. The bounds value are [xmin,ymin, xmax,ymax]
@@ -918,6 +953,16 @@ struct NVGparams {
     // Optional (may be NULL): draws verts (device-space triangles) with paint, scaled by the per-pixel
     // coverage of shape. nvgDrawGrid / nvgDrawArrow fall back to tessellated geometry without it.
     void (*renderShape)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, const NVGshape* shape, const NVGvertex* verts, int nverts);
+    // Optional (may be NULL): draws verts colored by paint's gradient (paint->image is 0), evaluated per
+    // pixel as in renderFill, scaled by the alpha texture mask sampled at the vertices' u, v. Used for
+    // gradient-filled text (NVG_TEXT_FILL_PAINT); without it such text uses the paint's inner color.
+    void (*renderMaskedPaint)(void* uptr, NVGpaint* paint, int mask, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, const NVGvertex* verts, int nverts, float fringe);
+    // Optional (may be NULL): draws paths' stroke geometry like renderStroke (solid) with a per-pixel
+    // stroke effect: effect[3] > 0 inner shadow, < 0 Gaussian-blurred stroke with distance coordinates in
+    // the vertices. See nvg::Params::renderStrokeEffect for the exact contract. Without it, blurred strokes
+    // use a linear antialiasing ramp and nvgStrokeInnerShadow is skipped.
+    void (*renderStrokeEffect)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, float strokeWidth, const float* effect,
+                               const NVGpath* paths, int npaths);
 };
 typedef struct NVGparams NVGparams;
 

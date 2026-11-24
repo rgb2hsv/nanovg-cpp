@@ -140,7 +140,7 @@ struct Functions {
 #undef NVGVK_DECLARE
 };
 
-enum ShaderType { ShaderFillGrad, ShaderFillImg, ShaderSimple, ShaderImg };
+enum ShaderType { ShaderFillGrad, ShaderFillImg, ShaderSimple, ShaderImg, ShaderGradMask };
 
 enum CallType { CallNone = 0, CallFill, CallConvexFill, CallStroke, CallTriangles };
 
@@ -176,8 +176,9 @@ struct FragUniforms {
     float shapeMat[12];  // device -> shape space (3 vec4 columns)
     float shapeRect[4];  // Shape::params[0..3]
     float shapeGrid[4];  // Shape::params[4..7]
+    float strokeEffect[4];  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
 };
-static_assert(sizeof(FragUniforms) == 272, "FragUniforms must match the std430 array stride of the shader struct");
+static_assert(sizeof(FragUniforms) == 288, "FragUniforms must match the std430 array stride of the shader struct");
 static_assert(offsetof(FragUniforms, shapeMat) == 192, "mat3 in std430 is 16-byte aligned");
 
 struct PushConstants {
@@ -1525,7 +1526,8 @@ static void renderFill(void* uptr, Paint* paint, CompositeOperationState composi
     if (ok) pushCall(vk, call, 1);
 }
 
-static void renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
+static void strokeCall(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths,
+                       const float* effect)
 {
     VkContext* vk = static_cast<VkContext*>(uptr);
     Call call{};
@@ -1549,7 +1551,27 @@ static void renderStroke(void* uptr, Paint* paint, CompositeOperationState compo
         call.uniformOffset = allocUniforms(vk, 1);
         ok = convertPaint(vk, &vk->uniforms[call.uniformOffset], paint, scissor, strokeWidth, fringe, -1.0f, lineStyle);
     }
+    if (ok && effect) {
+        for (int i = 0; i < nuniforms; i++) {
+            float* s = vk->uniforms[call.uniformOffset + i].strokeEffect;
+            s[0] = effect[0];
+            s[1] = effect[1];
+            s[2] = effect[2];
+            s[3] = effect[3];
+        }
+    }
     if (ok) pushCall(vk, call, nuniforms);
+}
+
+static void renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
+{
+    strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, lineStyle, paths, npaths, nullptr);
+}
+
+static void renderStrokeEffect(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* effect, const Path* paths,
+                                    int npaths)
+{
+    strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, effect);
 }
 
 static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
@@ -1566,6 +1588,26 @@ static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState co
     FragUniforms* frag = &vk->uniforms[call.uniformOffset];
     if (!convertPaint(vk, frag, paint, scissor, 1.0f, fringe, -1.0f, 0)) return;
     frag->type = ShaderImg;
+    pushCall(vk, call, 1);
+}
+
+static void renderMaskedPaint(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
+{
+    VkContext* vk = static_cast<VkContext*>(uptr);
+    Call call{};
+    call.type = CallTriangles;
+    call.image = mask;
+    call.blend = blendCompositeOperation(compositeOperation);
+    call.first = static_cast<int>(appendVerts(vk, verts, nverts));
+    call.count = nverts;
+
+    // The paint's gradient uniforms, sampled through the mask bound as the call's texture.
+    Paint gradient = *paint;
+    gradient.image = 0;
+    call.uniformOffset = allocUniforms(vk, 1);
+    FragUniforms* frag = &vk->uniforms[call.uniformOffset];
+    if (!convertPaint(vk, frag, &gradient, scissor, 1.0f, fringe, -1.0f, 0)) return;
+    frag->type = ShaderGradMask;
     pushCall(vk, call, 1);
 }
 
@@ -1664,6 +1706,8 @@ static VkContext* newContext(const VkCreateInfo& createInfo, int flags, Params* 
     params->renderStroke = renderStroke;
     params->renderTriangles = renderTriangles;
     params->renderShape = renderShape;
+    params->renderMaskedPaint = renderMaskedPaint;
+    params->renderStrokeEffect = renderStrokeEffect;
     params->renderDelete = renderDelete;
     params->userPtr = vk;
     params->edgeAntiAlias = (flags & CreateFlags::Antialias) ? 1 : 0;

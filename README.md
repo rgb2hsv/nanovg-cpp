@@ -15,7 +15,7 @@ This repository’s **`modernize-cpp`** branch extends upstream NanoVG with a C+
 - **Third-party headers** — `fontstash.h`, `stb_truetype.h`, and the tree’s `stb_image.h` are under [`src/thirdParty/`](src/thirdParty/).
 - **Build** — **CMake** is the supported route; **GLEW** is required via `find_package` or the `external/glew` submodule. **GLFW** is required for the stable C API examples (`example_stable_*`) and for C++ examples when SDL3 is not used (`external/glfw` submodule or system package). C++ example targets: `example_gl2`, `example_gl3`, `example_fbo`, **`example_vk`** (Vulkan). The stable C API equivalents are `example_stable_gl2`, `example_stable_gl3`, `example_stable_fbo`, **`example_stable_vk`**. The Vulkan targets, and the **`nanovg_vk`** library that implements the Vulkan C API, need only the Vulkan headers, taken from the pinned `external/Vulkan-Headers` submodule (never a system install), plus a Vulkan driver at runtime. Turn them off with `-DNANOVG_BUILD_VULKAN=OFF`.
 - **SDL3 (optional)** — C++ examples can use **SDL3** instead of GLFW: `-DNANOVG_USE_SDL3=ON`, with SDL3 from `find_package(SDL3)` or the **`external/SDL`** git submodule. Window creation is wrapped in [`example/nvg_window_sdl3.cpp`](example/nvg_window_sdl3.cpp) / [`nvg_window_glfw.cpp`](example/nvg_window_glfw.cpp). CMake option **`NVG_FAST_SQRT`** toggles the fast inverse-sqrt path in the core (`NANOVG_FAST_SQRT`).
-- **Example layout** — C++ sources and shared `demo.cpp` / `perf.cpp` stay in [`example/`](example/). The stable C API examples and their `demo.c` / `perf.c` are under [`example/stable/`](example/stable/). `demo.c` is kept in step with `demo.cpp`, including the draw-calls panel, so the C and C++ examples render the same frames.
+- **Example layout** — C++ sources and shared `demo.cpp` / `perf.cpp` stay in [`example/`](example/). The stable C API examples and their `demo.c` / `perf.c` are under [`example/stable/`](example/stable/). `demo.c` is kept in step with `demo.cpp`, including both tiled panels, so the C and C++ examples render the same frames.
 - **Removed** — Monolithic `src/nanovg.c` and the old split `obsolete/nanovg_gl2.h` / `obsolete/nanovg_gl3.h` tree; legacy Premake build files are gone in favor of CMake.
 
 ### Headless check
@@ -23,7 +23,9 @@ This repository’s **`modernize-cpp`** branch extends upstream NanoVG with a C+
 The `example_gl3`, `example_vk`, `example_stable_gl3` and `example_stable_vk` binaries accept `--test N` (and `--test=N`) to run a fixed-frame capture path useful for CI (see `.cursor/skills/verify` in this repo). Each run writes `screenshotNNN.png` to the working directory and compares it against an existing file of the same name, so running two of them from the same directory checks one against the other (Vulkan against GL, or the stable C API against C++). The two agree to within 2/255 per channel, apart from occasional single rows where an edge falls exactly on a pixel center (GL and Vulkan resolve that tie differently).
 
 ## Screenshot
-<img width="1200" height="1000" alt="NanoVG++ demo: classic widgets on top, Skia-style draw calls panel below" src="docs/demo.png" />
+<img width="1200" height="860" alt="NanoVG++ demo: classic NanoVG demo tiles on top, Skia-style draw calls panel below" src="docs/demo.png" />
+
+The demo is split into labeled tiles. The top panel is the classic NanoVG demo (widgets, eyes, color wheel, graph, text paragraph, line joins and caps, scissor, …), one tile per feature, each naming the draw calls it exercises; the bottom panel has one tile per Skia-style draw call and newer feature.
 
 Usage
 =====
@@ -171,6 +173,54 @@ vg.textOuterShadow(0, 0, 0, nvg::rgba(0, 0, 0, 0));         // off (zero alpha)
 ```
 
 The outer shadow reuses the font atlas blur, so it is capped at 20 device pixels, and each distinct blur value caches its own glyphs (avoid animating it continuously). The inner shadow is built per `text()` call on the CPU: it rasterizes the string's coverage from the atlas, blurs it (the same filter, with fractional radii up to 64 device pixels, so it can be animated), shifts it by the whole-string offset, and draws the result as one textured quad. It works on every backend, and its cost grows with the text's pixel area. C: `nvgTextOuterShadow`, `nvgTextInnerShadow`.
+
+Text can follow any path, like SVG `<textPath>`. Build a path as usual and call `textOnPath` instead of `fill()` or `stroke()`: each glyph is placed at its advance midpoint's distance along the path and rotated to the path's direction there, so the text turns as the curve turns. The path isn't drawn and stays current, so you can still stroke it afterwards:
+
+```cpp
+vg.beginPath();
+vg.moveTo(20, 120);
+vg.bezierTo(100, 40, 200, 200, 280, 120);
+vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Baseline));
+nvg::TextPathOptions opts;
+opts.startOffset = 50;                           // SVG startOffset="50%"
+opts.startOffsetPercent = true;
+vg.textOnPath("Text that follows the curve", nullptr, opts);
+vg.stroke();                                     // optional: show the path too
+
+vg.beginPath();
+vg.circle(cx, cy, r);
+opts = {};
+opts.method = nvg::TextPathMethod::Stretch;      // bend each glyph along the curve
+opts.side = nvg::TextPathSide::Right;            // run the other way, on the other side
+vg.textOnPath("round and round ", nullptr, opts);
+```
+
+The attributes mirror SVG: the horizontal part of `textAlign` is `text-anchor` around `startOffset` (left = start, center = middle, right = end) and the vertical part places the glyphs on the path (`Baseline` sits them on it, `Middle` centers them). `startOffset` is in local units, or a percentage with `startOffsetPercent`; `baselineShift` moves the glyphs off the path along its normal. `TextPathMethod::Align` (the default) keeps glyphs rigid, while `Stretch` cuts each glyph into slices that bend with the path. `TextPathSide::Right` follows the path in reverse. Glyphs whose midpoint falls off either end of the path are dropped, as in SVG, except on a path made of a single closed subpath (a circle, a rounded rect), where positions wrap around so the start offset can be animated freely. Subpaths are followed one after the other. Font, size, letter spacing, blur, the fill paint and `textOuterShadow` apply as for `text()`; `textInnerShadow` does not. It returns the distance along the path just past the last glyph. C: `nvgTextOnPath(vg, string, end, startOffset, baselineShift, flags)` with `NVG_TEXTPATH_PERCENT`, `NVG_TEXTPATH_RIGHT` and `NVG_TEXTPATH_STRETCH`.
+
+Text can be filled with gradients. By default glyphs take only the fill paint's inner color, as in classic NanoVG; `textFill(nvg::TextFill::Paint)` makes `text()`, `textBox()` and `textOnPath()` show the whole fill paint instead, so a linear, radial or box gradient runs across the glyphs exactly as it would across a rect filled under them. Build the gradient from the text's bounds to span the string:
+
+```cpp
+float b[4];
+vg.textBounds(x, y, "Gradient", nullptr, b);
+vg.fillPaint(vg.linearGradient(b[0], 0, b[2], 0, nvg::rgba(255, 60, 120, 255), nvg::rgba(80, 200, 255, 255)));
+vg.textFill(nvg::TextFill::Paint);
+vg.text(x, y, "Gradient", nullptr);
+```
+
+The option is saved with the state. Backends draw it through the optional `Params::renderMaskedPaint` hook (the GL, stable GL and Vulkan backends implement it), which evaluates the gradient per pixel and multiplies it by the glyph coverage from the font atlas; without the hook, or with an image-pattern paint, text keeps its inner color. C: `nvgTextFill(vg, NVG_TEXT_FILL_PAINT)`.
+
+Strokes get the same effects as text. `strokeOuterShadow` draws a soft, offset copy of the stroke under it (with no offset and a bright color it is a glow), `strokeInnerShadow` shades the inside of the stroke along the edges facing away from the offset, `strokeOutline` draws a band of the given width around the stroke underneath it, and `strokeBlur` softens the stroke's own edges, like `fontBlur`:
+
+```cpp
+vg.strokeOuterShadow(/*offsetX*/ 3, /*offsetY*/ 4, /*blur*/ 4, nvg::rgba(0, 0, 0, 200));
+vg.strokeOuterShadow(0, 0, 6, nvg::rgba(80, 200, 255, 255));    // glow
+vg.strokeInnerShadow(/*offsetX*/ 2, /*offsetY*/ 2, /*blur*/ 2, nvg::rgba(90, 20, 60, 255));
+vg.strokeOutline(/*width*/ 2.5f, nvg::rgba(255, 255, 255, 255));
+vg.strokeBlur(1.0f);
+vg.stroke();                                                    // or drawLine, drawRect(..., Stroke), ...
+```
+
+All of them are in local units, follow the transform, are saved with the state and apply to every `stroke()` (including dashed strokes and the Skia-style calls that stroke), but not to markers or to the shader-drawn `drawArrow` / `drawGrid`. Zero alpha (or width) turns each one off. Shadows, outlines and blur are extra stroke passes and need an antialiased context. Blurs are Gaussian (the same sigma as the font atlas blur) and measured from the true distance to the stroke: for blurred passes the stroke's vertices carry distance coordinates (across the center line, and along from the start and to the end) that interpolate exactly across triangles, so the shader sees a capsule at round caps and joins and a blurred box at butt and square caps, and the glow around a round end stays round. The inner shadow is computed per pixel from the stroke's across coordinate and its screen-space derivative. Both go through the optional `Params::renderStrokeEffect` hook (GL, stable GL and Vulkan implement it; GLES2 needs `GL_OES_standard_derivatives` for the inner shadow); without it, blurs fall back to a wide linear antialiasing ramp and the inner shadow is skipped. C: `nvgStrokeOuterShadow`, `nvgStrokeInnerShadow`, `nvgStrokeOutline`, `nvgStrokeBlur`.
 
 ### Skia-style draw calls (C++ only)
 

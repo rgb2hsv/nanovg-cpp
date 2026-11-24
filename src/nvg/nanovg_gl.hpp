@@ -109,7 +109,7 @@ namespace nvg
 
 enum GlUniformLoc { GlUniformLocViewSize, GlUniformLocTex, GlUniformLocFrag, GlUniformLocCount };
 
-enum GlShaderType { NSVG_SHADER_FILLGRAD, NSVG_SHADER_FILLIMG, NSVG_SHADER_SIMPLE, NSVG_SHADER_IMG };
+enum GlShaderType { NSVG_SHADER_FILLGRAD, NSVG_SHADER_FILLIMG, NSVG_SHADER_SIMPLE, NSVG_SHADER_IMG, NSVG_SHADER_GRADMASK };
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
 enum GlUniformBindings {
@@ -192,10 +192,11 @@ struct GlFragUniforms {
     float shapeMat[12];  // device -> shape space
     float shapeRect[4];  // Shape::params[0..3]
     float shapeGrid[4];  // Shape::params[4..7]
+    float strokeEffect[4];  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
 #else
 // note: after modifying layout or size of uniform array,
 // don't forget to also update the fragment shader source!
-#define NANOVG_GL_UNIFORMARRAY_SIZE 17
+#define NANOVG_GL_UNIFORMARRAY_SIZE 18
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4201)  // nonstandard extension: nameless struct/union
@@ -222,6 +223,7 @@ struct GlFragUniforms {
             float shapeMat[12];  // device -> shape space
             float shapeRect[4];  // Shape::params[0..3]
             float shapeGrid[4];  // Shape::params[4..7]
+            float strokeEffect[4];  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
         };
         float uniformArray[NANOVG_GL_UNIFORMARRAY_SIZE][4];
     };
@@ -528,7 +530,7 @@ static int glnvg__renderCreate(void* uptr)
         R"NVG(#define USE_UNIFORMBUFFER 1
 )NVG"
 #else
-        R"NVG(#define UNIFORMARRAY_SIZE 17
+        R"NVG(#define UNIFORMARRAY_SIZE 18
 )NVG"
 #endif
         R"NVG(
@@ -559,6 +561,12 @@ void main(void) {
 )NVG";
 
     static const char* fillFragShader = R"NVG(
+#if defined(GL_ES) && !defined(NANOVG_GL3)
+#extension GL_OES_standard_derivatives : enable
+#endif
+#if !defined(GL_ES) || defined(NANOVG_GL3) || defined(GL_OES_standard_derivatives)
+#define HAVE_DERIVATIVES 1
+#endif
 #ifdef GL_ES
 #if defined(GL_FRAGMENT_PRECISION_HIGH) || defined(NANOVG_GL3)
  precision highp float;
@@ -589,6 +597,7 @@ void main(void) {
 		mat3 shapeMat;
 		vec4 shapeRect;
 		vec4 shapeGrid;
+		vec4 strokeEffect;
 	};
 #else
 	uniform vec4 frag[UNIFORMARRAY_SIZE];
@@ -626,6 +635,7 @@ void main(void) {
 	#define shapeMat mat3(frag[12].xyz, frag[13].xyz, frag[14].xyz)
 	#define shapeRect frag[15]
 	#define shapeGrid frag[16]
+	#define strokeEffect frag[17]
 #endif
 
 // Analytic shapes (drawGrid / drawArrow): coverage of the shape at p (shape space).
@@ -690,6 +700,46 @@ float scissorMask(vec2 p) {
 	sc = vec2(0.5,0.5) - sc * scissorScale;
 	return clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);
 }
+#ifdef EDGE_AA
+// Stroke inner shadow: one minus the coverage of the stroke band moved by strokeEffect.xy and blurred
+// by strokeEffect.z, for a band of half width strokeEffect.w (framebuffer px). ftcoord.x runs 0..1 across
+// the band, so its screen-space gradient gives the band's normal at this pixel.
+// Gaussian-blurred stroke (strokeEffect.w < 0): the vertices carry distance coordinates, ftcoord.x =
+// signed distance across the center line, ftcoord.y = distance from the path's start, uv.x * 2 = distance
+// to its end. phi is the normal CDF (logistic approximation); the band profile is phi(hw - d) - phi(-hw - d).
+float phi(float x) {
+	return 1.0 / (1.0 + exp(-1.702 * x));
+}
+float strokeBlurCoverage() {
+	float hw = strokeEffect.x, sig = strokeEffect.y;
+	float a0 = ftcoord.y, a1 = uv.x * 2.0;
+	if (strokeEffect.w < -1.5) {  // round ends: distance to the capsule's core segment
+		float r = length(vec2(ftcoord.x, max(max(-a0, -a1), 0.0)));
+		return phi((hw - r) / sig) - phi((-hw - r) / sig);
+	}
+	// butt / square ends: a box, blurred across times blurred along
+	float d = abs(ftcoord.x);
+	float across = phi((hw - d) / sig) - phi((-hw - d) / sig);
+	return across * clamp(phi(a0 / sig) + phi(a1 / sig) - 1.0, 0.0, 1.0);
+}
+// g: screen-space gradient of ftcoord.x, taken in main() before any discard (derivatives after one
+// are undefined).
+float strokeInnerShadow(vec2 g) {
+#ifdef HAVE_DERIVATIVES
+	float a = ftcoord.x;
+	float gl = length(g);
+	if (gl < 1e-6) return 0.0;
+	float halfW = strokeEffect.w;               // half width including the antialiasing ramp
+	float edge = halfW * (1.0 - 0.5 / strokeMult);  // nominal half width (the middle of the ramp)
+	float p = (a - 0.5) * 2.0 * halfW;          // signed distance from the center line
+	float s = dot(strokeEffect.xy, g / gl); // offset across the band
+	float b = max(strokeEffect.z * 2.0, 1.0);
+	return 1.0 - clamp((edge - abs(p - s)) / b + 0.5, 0.0, 1.0);
+#else
+	return 0.0;
+#endif
+}
+#endif
 float glow(vec2 uv){
   return smoothstep(0.0, 1.0, 1.0 - 2.0 * abs(uv.x));
 }
@@ -721,8 +771,13 @@ float strokeMask() {
 void main(void) {
    vec4 result;
 	float scissor = scissorMask(fpos);
+#if defined(EDGE_AA) && defined(HAVE_DERIVATIVES)
+	vec2 strokeGrad = vec2(dFdx(ftcoord.x), -dFdy(ftcoord.x));  // GL window y runs up; NanoVG's y runs down
+#else
+	vec2 strokeGrad = vec2(0.0);
+#endif
 #ifdef EDGE_AA
-	float strokeAlpha = strokeMask();
+	float strokeAlpha = strokeEffect.w < 0.0 ? strokeBlurCoverage() : strokeMask();
 if(lineStyle == 2) strokeAlpha*=dashed(uv);
 if(lineStyle == 3) strokeAlpha*=dotted(uv);
 if(lineStyle == 4) strokeAlpha*=glow(uv);
@@ -769,8 +824,20 @@ if (lineStyle > 1 && strokeAlpha < strokeThr) discard;
 		if (texType == 2) color = vec4(color.x);
 		color *= scissor;
 		result = color * innerCol;
+	} else if (type == 4) {		// Gradient through an alpha mask (gradient-filled text)
+		vec2 pt = (paintMat * vec3(fpos,1.0)).xy;
+		float d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);
+#ifdef NANOVG_GL3
+		float mask = texture(tex, ftcoord).x;
+#else
+		float mask = texture2D(tex, ftcoord).x;
+#endif
+		result = mix(innerCol,outerCol,d) * (mask * scissor);
 	}
 	if (shapeType != 0) result *= shapeCoverage((shapeMat * vec3(fpos, 1.0)).xy);
+#ifdef EDGE_AA
+	if (strokeEffect.w > 0.0) result *= strokeInnerShadow(strokeGrad);
+#endif
 #ifdef NANOVG_GL3
 	outColor = result;
 #else
@@ -1534,7 +1601,8 @@ error:
     if (gl->ncalls > 0) gl->ncalls--;
 }
 
-static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
+static void glnvg__strokeCall(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths,
+                              const float* effect)
 {
     GLContext* gl = (GLContext*)uptr;
     GlCall* call = glnvg__allocCall(gl);
@@ -1580,6 +1648,16 @@ static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationStat
         if (call->uniformOffset == -1) goto error;
         glnvg__convertPaint(gl, nvg::detail::fragUniformPtr(gl, call->uniformOffset), paint, scissor, strokeWidth, fringe, -1.0f, lineStyle);
     }
+    if (effect) {
+        const int nfrags = (gl->flags & CreateFlags::StencilStrokes) ? 2 : 1;
+        for (i = 0; i < nfrags; i++) {
+            GlFragUniforms* frag = nvg::detail::fragUniformPtr(gl, call->uniformOffset + i * gl->fragSize);
+            frag->strokeEffect[0] = effect[0];
+            frag->strokeEffect[1] = effect[1];
+            frag->strokeEffect[2] = effect[2];
+            frag->strokeEffect[3] = effect[3];
+        }
+    }
 
     return;
 
@@ -1587,6 +1665,17 @@ error:
     // We get here if call alloc was ok, but something else is not.
     // Roll back the last call to prevent drawing it.
     if (gl->ncalls > 0) gl->ncalls--;
+}
+
+static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
+{
+    glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, lineStyle, paths, npaths, NULL);
+}
+
+static void glnvg__renderStrokeEffect(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* effect,
+                                           const Path* paths, int npaths)
+{
+    glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, effect);
 }
 
 static void glnvg__renderTriangles(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
@@ -1632,6 +1721,49 @@ static void glnvg__renderTriangles(void* uptr, Paint* paint, CompositeOperationS
 error:
     // We get here if call alloc was ok, but something else is not.
     // Roll back the last call to prevent drawing it.
+    if (gl->ncalls > 0) gl->ncalls--;
+}
+
+static void glnvg__renderMaskedPaint(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
+{
+    GLContext* gl = (GLContext*)uptr;
+    GlCall* call = glnvg__allocCall(gl);
+    GlFragUniforms* frag;
+    Paint gradient = *paint;
+
+    if (call == NULL) return;
+
+    call->type = Triangles;
+    call->image = mask;
+    call->blendFunc = glnvg__blendCompositeOperation(compositeOperation);
+
+    call->triangleOffset = glnvg__allocVerts(gl, nverts);
+    if (call->triangleOffset == -1) goto error;
+    call->triangleCount = nverts;
+    std::memcpy(&gl->verts[call->triangleOffset], verts, sizeof(Vertex) * nverts);
+
+    // The paint's gradient uniforms, sampled through the mask bound as the call's texture.
+    call->uniformOffset = glnvg__allocFragUniforms(gl, 1);
+    if (call->uniformOffset == -1) goto error;
+    frag = nvg::detail::fragUniformPtr(gl, call->uniformOffset);
+    gradient.image = 0;
+    glnvg__convertPaint(gl, frag, &gradient, scissor, 1.0f, fringe, -1.0f, 0);
+    frag->type = NSVG_SHADER_GRADMASK;
+
+    // Fold consecutive runs drawn the same way, as glnvg__renderTriangles does.
+    if (gl->ncalls >= 2) {
+        GlCall* prev = &gl->calls[gl->ncalls - 2];
+        if (prev->type == Triangles && prev->image == call->image && std::memcmp(&prev->blendFunc, &call->blendFunc, sizeof(GlBlend)) == 0 &&
+            prev->triangleOffset + prev->triangleCount == call->triangleOffset &&
+            std::memcmp(nvg::detail::fragUniformPtr(gl, prev->uniformOffset), frag, sizeof(GlFragUniforms)) == 0) {
+            prev->triangleCount += call->triangleCount;
+            gl->ncalls--;
+            gl->nuniforms--;
+        }
+    }
+    return;
+
+error:
     if (gl->ncalls > 0) gl->ncalls--;
 }
 
@@ -1726,6 +1858,8 @@ std::unique_ptr<Context> createGL(int flags)
     params.renderStroke = glnvg__renderStroke;
     params.renderTriangles = glnvg__renderTriangles;
     params.renderShape = glnvg__renderShape;
+    params.renderMaskedPaint = glnvg__renderMaskedPaint;
+    params.renderStrokeEffect = glnvg__renderStrokeEffect;
     params.renderDelete = glnvg__renderDelete;
     params.userPtr = gl;
     params.edgeAntiAlias = flags & CreateFlags::Antialias ? 1 : 0;

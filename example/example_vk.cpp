@@ -658,7 +658,7 @@ int main(int argc, char** argv)
     initGraph(cpuGraph, GRAPH_RENDER_MS, "CPU Time");
     initGraph(gpuGraph, GRAPH_RENDER_MS, "GPU Time");
 
-    NvgWindow* window = nvgwin_create(1200, 1000, "NanoVG (Vulkan)", NVGWIN_PROFILE_VULKAN, 0, 0);
+    NvgWindow* window = nvgwin_create(1200, 860, "NanoVG (Vulkan)", NVGWIN_PROFILE_VULKAN, 0, 0);
     if (!window) {
         nvgwin_shutdown();
         return -1;

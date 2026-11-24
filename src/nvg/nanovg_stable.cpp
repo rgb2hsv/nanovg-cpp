@@ -299,6 +299,26 @@ void nvgMarkers(NVGcontext* ctx, NVGmarker marker)
     ctx->markers(toCppMarker(ctx, marker));
 }
 
+void nvgStrokeOuterShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color)
+{
+    ctx->strokeOuterShadow(offsetX, offsetY, blur, toCpp(color));
+}
+
+void nvgStrokeInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color)
+{
+    ctx->strokeInnerShadow(offsetX, offsetY, blur, toCpp(color));
+}
+
+void nvgStrokeOutline(NVGcontext* ctx, float width, NVGcolor color)
+{
+    ctx->strokeOutline(width, toCpp(color));
+}
+
+void nvgStrokeBlur(NVGcontext* ctx, float blur)
+{
+    ctx->strokeBlur(blur);
+}
+
 void nvgLineCap(NVGcontext* ctx, int cap)
 {
     ctx->lineCap(cap);
@@ -653,6 +673,12 @@ void nvgFontDilate(NVGcontext* ctx, float dilate)
     ctx->fontDilate(dilate);
 }
 
+void nvgTextFill(NVGcontext* ctx, int mode)
+{
+    static_assert(static_cast<int>(NVG_TEXT_FILL_PAINT) == static_cast<int>(nvg::TextFill::Paint));
+    ctx->textFill(mode == NVG_TEXT_FILL_PAINT ? nvg::TextFill::Paint : nvg::TextFill::Color);
+}
+
 void nvgTextLetterSpacing(NVGcontext* ctx, float spacing)
 {
     ctx->textLetterSpacing(spacing);
@@ -706,6 +732,17 @@ float nvgText(NVGcontext* ctx, float x, float y, const char* string, const char*
 void nvgTextBox(NVGcontext* ctx, float x, float y, float breakRowWidth, const char* string, const char* end)
 {
     ctx->textBox(x, y, breakRowWidth, string, end);
+}
+
+float nvgTextOnPath(NVGcontext* ctx, const char* string, const char* end, float startOffset, float baselineShift, int flags)
+{
+    nvg::TextPathOptions options;
+    options.startOffset = startOffset;
+    options.startOffsetPercent = (flags & NVG_TEXTPATH_PERCENT) != 0;
+    options.side = (flags & NVG_TEXTPATH_RIGHT) ? nvg::TextPathSide::Right : nvg::TextPathSide::Left;
+    options.method = (flags & NVG_TEXTPATH_STRETCH) ? nvg::TextPathMethod::Stretch : nvg::TextPathMethod::Align;
+    options.baselineShift = baselineShift;
+    return ctx->textOnPath(string, end, options);
 }
 
 float nvgTextBounds(NVGcontext* ctx, float x, float y, const char* string, const char* end, float* bounds)

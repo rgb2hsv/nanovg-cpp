@@ -25,6 +25,7 @@ struct FragUniforms {
     mat3 shapeMat;  // device -> shape space
     vec4 shapeRect;
     vec4 shapeGrid;
+    vec4 strokeEffect;  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer FragBuffer {
@@ -146,13 +147,54 @@ float strokeMask(FragUniforms f)
     return min(1.0, (1.0 - abs(ftcoord.x * 2.0 - 1.0)) * f.strokeMult) * min(1.0, ftcoord.y);
 }
 
+// Stroke inner shadow: one minus the coverage of the stroke band moved by strokeEffect.xy and blurred by
+// strokeEffect.z, for a band of half width strokeEffect.w (framebuffer px). ftcoord.x runs 0..1 across the
+// band, so its screen-space gradient gives the band's normal at this pixel.
+// Gaussian-blurred stroke (strokeEffect.w < 0): the vertices carry distance coordinates, ftcoord.x =
+// signed distance across the center line, ftcoord.y = distance from the path's start, uv.x * 2 = distance
+// to its end. phi is the normal CDF (logistic approximation); the band profile is phi(hw - d) - phi(-hw - d).
+float phi(float x)
+{
+    return 1.0 / (1.0 + exp(-1.702 * x));
+}
+
+float strokeBlurCoverage(FragUniforms f)
+{
+    float hw = f.strokeEffect.x, sig = f.strokeEffect.y;
+    float a0 = ftcoord.y, a1 = uv.x * 2.0;
+    if (f.strokeEffect.w < -1.5) {  // round ends: distance to the capsule's core segment
+        float r = length(vec2(ftcoord.x, max(max(-a0, -a1), 0.0)));
+        return phi((hw - r) / sig) - phi((-hw - r) / sig);
+    }
+    // butt / square ends: a box, blurred across times blurred along
+    float d = abs(ftcoord.x);
+    float across = phi((hw - d) / sig) - phi((-hw - d) / sig);
+    return across * clamp(phi(a0 / sig) + phi(a1 / sig) - 1.0, 0.0, 1.0);
+}
+
+// g: screen-space gradient of ftcoord.x, taken in main() before any discard (derivatives after one are
+// undefined).
+float strokeInnerShadow(FragUniforms f, vec2 g)
+{
+    float a = ftcoord.x;
+    float gl = length(g);
+    if (gl < 1e-6) return 0.0;
+    float halfW = f.strokeEffect.w;                   // half width including the antialiasing ramp
+    float edge = halfW * (1.0 - 0.5 / f.strokeMult);  // nominal half width (the middle of the ramp)
+    float p = (a - 0.5) * 2.0 * halfW;                // signed distance from the center line
+    float s = dot(f.strokeEffect.xy, g / gl);         // offset across the band
+    float b = max(f.strokeEffect.z * 2.0, 1.0);
+    return 1.0 - clamp((edge - abs(p - s)) / b + 0.5, 0.0, 1.0);
+}
+
 void main(void)
 {
     FragUniforms f = frags[pc.uniformIndex];
+    vec2 strokeGrad = vec2(dFdx(ftcoord.x), dFdy(ftcoord.x));  // before any discard
     vec4 result = vec4(0.0);
     float scissor = scissorMask(f, fpos);
 
-    float strokeAlpha = (EDGE_AA != 0) ? strokeMask(f) : 1.0;
+    float strokeAlpha = (EDGE_AA != 0) ? (f.strokeEffect.w < 0.0 ? strokeBlurCoverage(f) : strokeMask(f)) : 1.0;
     if (f.lineStyle == 2) strokeAlpha *= dashed(uv);
     if (f.lineStyle == 3) strokeAlpha *= dotted(uv);
     if (f.lineStyle == 4) strokeAlpha *= glow(uv);
@@ -184,6 +226,10 @@ void main(void)
         if (f.texType == 2) color = vec4(color.x);
         color *= scissor;
         result = color * f.innerCol;
+    } else if (f.type == 4) {  // Gradient through an alpha mask (gradient-filled text)
+        vec2 pt = (f.paintMat * vec3(fpos, 1.0)).xy;
+        float d = clamp((sdroundrect(pt, f.extent, f.radius) + f.feather * 0.5) / f.feather, 0.0, 1.0);
+        result = mix(f.innerCol, f.outerCol, d) * (texture(tex, ftcoord).x * scissor);
     }
     if (f.shapeType != 0) {
         shapeType = f.shapeType;
@@ -193,5 +239,6 @@ void main(void)
         shapeGrid = f.shapeGrid;
         result *= shapeCoverage((f.shapeMat * vec3(fpos, 1.0)).xy);
     }
+    if (EDGE_AA != 0 && f.strokeEffect.w > 0.0) result *= strokeInnerShadow(f, strokeGrad);
     outColor = result;
 }

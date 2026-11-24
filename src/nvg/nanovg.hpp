@@ -188,6 +188,7 @@ enum class MarkerOrient : int {
 };
 
 class Context;
+struct TextPathGeometry;  // flattened path used internally by Context::textOnPath
 
 // A stroke marker, drawn at path vertices by Context::stroke (SVG marker-start / marker-mid /
 // marker-end with markerUnits="strokeWidth"). The marker frame has its origin on the vertex and +x along
@@ -201,6 +202,38 @@ struct Marker {
     // the stroke paint and the stroke width set to the stroked path's width. It may build and fill/stroke
     // any paths; the caller's path and state are restored afterwards. Markers do not nest.
     std::function<void(Context& ctx)> draw;
+};
+
+// How text is colored by the fill paint (Context::textFill).
+enum class TextFill : int {
+    Color = 0,  // Glyphs take the fill paint's inner color only, as in classic NanoVG (the default).
+    Paint = 1,  // Glyphs show the whole fill paint: a linear, radial or box gradient is evaluated across
+                // them as if a rect under the text were filled with it, in the same coordinates as shapes.
+};
+
+// Which side of the path text is drawn on by Context::textOnPath, like the SVG textPath side attribute.
+enum class TextPathSide : int {
+    Left = 0,   // Along the path's direction, glyphs upright on its left (the default).
+    Right = 1,  // The path is followed in reverse, so text runs the other way on the opposite side.
+};
+
+// How glyphs follow the path in Context::textOnPath, like the SVG textPath method attribute.
+enum class TextPathMethod : int {
+    Align = 0,    // Each glyph stays rigid and is rotated to the path's direction at its midpoint.
+    Stretch = 1,  // Each glyph is cut into thin slices that bend with the path, so it warps along curves.
+};
+
+// Layout of Context::textOnPath, mirroring the SVG <textPath> attributes.
+struct TextPathOptions {
+    // Distance along the path where the text's anchor point sits (SVG startOffset), in local units, or
+    // a percentage of the path's length (0..100) when startOffsetPercent is set.
+    float startOffset = 0.0f;
+    bool startOffsetPercent = false;
+    TextPathSide side = TextPathSide::Left;
+    TextPathMethod method = TextPathMethod::Align;
+    // Moves the glyphs away from the path along its normal, in local units (positive = towards the
+    // glyphs' "down", like SVG dy / a negative baseline-shift).
+    float baselineShift = 0.0f;
 };
 
 struct GlyphPosition {
@@ -328,6 +361,25 @@ struct Params {
     // Optional (may be null): draws verts (device-space triangles) with paint, scaled by the coverage of
     // shape. Context falls back to tessellated geometry when it is not set.
     void (*renderShape)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const Shape* shape, const Vertex* verts, int nverts);
+    // Optional (may be null): draws verts (device-space triangles) colored by paint's gradient (paint->image
+    // is 0), evaluated per pixel as in renderFill, and scaled by the coverage in the alpha texture mask
+    // sampled at the vertices' u, v. Used for gradient-filled text (TextFill::Paint); without it such text
+    // falls back to the paint's inner color.
+    void (*renderMaskedPaint)(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe);
+    // Optional (may be null): draws paths' stroke geometry like renderStroke (solid line style) with a
+    // per-pixel stroke effect selected by effect[3]:
+    //  > 0  Inner shadow: the paint is scaled by one minus the coverage of the stroke band moved by
+    //       (effect[0], effect[1]) and blurred by effect[2], effect[3] being the band's half width
+    //       including the antialiasing ramp, all in framebuffer pixels (the vertices are as from
+    //       renderStroke; ftcoord.x runs 0..1 across the band).
+    //  < 0  Gaussian-blurred stroke: coverage is a Gaussian blur (sigma effect[1]) of the stroke of half
+    //       width effect[0], in vertex units. The vertices carry distance coordinates instead of the usual
+    //       ones: u = signed distance across the center line, v = distance along from the path's start,
+    //       s = distance along to its end (very large on closed paths). effect[3] = -1: butt / square
+    //       ends (a box: blurred across times blurred along), -2: round ends (a capsule).
+    // Context falls back to plain strokes (blur as a linear antialiasing ramp, no inner shadow) without it.
+    void (*renderStrokeEffect)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* effect, const Path* paths,
+                               int npaths);
 };
 
 #ifdef _MSC_VER
@@ -390,6 +442,24 @@ public:
     void markerEnd(const Marker& marker);
     // Sets all three, like the SVG marker shorthand.
     void markers(const Marker& marker);
+    // Stroke effects matching the text ones, applied by every stroke() (and the Skia-style calls that
+    // stroke) in local units, so they follow the transform. All are saved and restored with the state.
+    // Soft shadow under the stroke, like textOuterShadow: the stroke again in color, offset by
+    // (offsetX, offsetY) and blurred by blur. No offset and a bright color make a glow. Zero alpha = off.
+    void strokeOuterShadow(float offsetX, float offsetY, float blur, const Color& color);
+    // Inner shadow over the stroke, like textInnerShadow: color inside the stroke wherever a copy of it,
+    // offset by (offsetX, offsetY) and blurred by blur, does not cover it, so an offset down-right shades
+    // the band's top-left edges. Needs Params::renderStrokeEffect (the bundled GL and Vulkan
+    // backends; GLES2 also needs GL_OES_standard_derivatives). Zero alpha = off.
+    void strokeInnerShadow(float offsetX, float offsetY, float blur, const Color& color);
+    // An outline of the given width around the stroke, drawn under it in color (the stroke grown by
+    // width on each side), like an outlined text style. Zero width or alpha = off.
+    void strokeOutline(float width, const Color& color);
+    // Blurs the stroke's own edges (and its outline) by blur, like fontBlur. 0 = sharp (the default).
+    // Blurs (here and in the outer shadow) are Gaussian, measured from the true distance to the stroke,
+    // so round caps and joins stay round, through Params::renderStrokeEffect; without it they fall back
+    // to a linear ramp. They need an antialiased context (CreateFlags::Antialias).
+    void strokeBlur(float blur);
     void lineCap(int cap);
     void lineJoin(int join);
     void globalAlpha(float alpha);
@@ -507,7 +577,12 @@ private:
     // path); otherwise the arc must start at the current point.
     void appendEllipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float da, bool connect);
     void strokePath(bool withMarkers);
+    // One stroke pass of the current path: paint, the stroke widened by extraWidth on each side, edges
+    // blurred by blur, offset by (dx, dy) (local units); with innerShadow (device px: offset x, y, blur)
+    // it goes through Params::renderStrokeEffect (the pass fills in the band's half width).
+    void strokePass(const Paint& paint, float extraWidth, float blur, float dx, float dy, const float* innerShadow);
     void textInnerShadowPass(float x, float y, const char* string, const char* end);
+    float textOnPathPass(const TextPathGeometry& path, const char* string, const char* end, const TextPathOptions& options, float shiftX, float shiftY);
     void drawMarkers();
     // Draws one shader-evaluated shape pass (fill or stroke) through Params::renderShape. Returns false,
     // drawing nothing, when the backend has no renderShape or the shader cannot match the geometry path.
@@ -540,6 +615,12 @@ public:
     // the cost grows with the text's pixel area. Zero alpha turns it off (the default).
     void textInnerShadow(float offsetX, float offsetY, float blur, const Color& color);
     void fontDilate(float dilate);
+    // Selects how text() / textBox() / textOnPath() glyphs are colored by the fill paint. With
+    // TextFill::Paint a gradient fill (linearGradient, radialGradient, boxGradient) runs across the glyphs
+    // exactly as it would across a rect filled under them, so build it from the text's bounds (textBounds)
+    // to span the string. Image patterns keep the classic behaviour (their tint), as do backends without
+    // Params::renderMaskedPaint. Saved with the state; the default is TextFill::Color.
+    void textFill(TextFill mode);
     void textLetterSpacing(float spacing);
     void textLineHeight(float lineHeight);
     void textAlign(int align);
@@ -551,6 +632,19 @@ public:
     int getTextAlign() const;
     float text(float x, float y, const char* string, const char* end);
     void textBox(float x, float y, float breakRowWidth, const char* string, const char* end);
+    // Draws text along the current path, like SVG <textPath>: every glyph is placed at its advance
+    // midpoint's distance along the path and rotated to follow the path's direction there, so the text
+    // reorients as the curve turns. The path is used as built (beginPath, moveTo, bezierTo, arc, ...),
+    // is not drawn, and stays the current path, so it can still be filled or stroked afterwards.
+    // The text is laid out as by text() from the path's start: textAlign's horizontal part is the SVG
+    // text-anchor around startOffset (Left = start, Center = middle, Right = end) and its vertical part
+    // places the glyphs relative to the path (Baseline puts the baseline on it, Middle centers them).
+    // Font, size, letter spacing, blur, dilate, fill paint and textOuterShadow apply as for text();
+    // textInnerShadow does not. Subpaths are followed one after the other (a moveTo jumps without adding
+    // length). As in SVG, glyphs whose midpoint falls off either end of the path are not drawn, except
+    // on a path made of one closed subpath, where positions wrap around. Returns the distance along the
+    // path, in local units, just past the last glyph's advance.
+    float textOnPath(const char* string, const char* end, const TextPathOptions& options = {});
     float textBounds(float x, float y, const char* string, const char* end, float* bounds);
     void textBoxBounds(float x, float y, float breakRowWidth, const char* string, const char* end, float* bounds);
     int textGlyphPositions(float x, float y, const char* string, const char* end, GlyphPosition* positions, int maxPositions);
