@@ -15,6 +15,8 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
 // Showcase of the Skia-style immediate draw calls (drawRect, drawArc, drawImageNine, ...) inside the given rect.
 // renderDemo() calls this for the bottom part of the window.
 void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float height, float t, DemoData& data);
+// renderDemo() calls this for the top part of the window: the classic NanoVG demo, one labeled tile per feature.
+void renderClassicDemo(nvg::Context& vg, float x, float y, float width, float height, float mx, float my, float t, int blowup, DemoData& data);
 
 // Reads back the current GL framebuffer (GL examples only).
 bool saveScreenShot(int w, int h, int premult, const std::string& name, bool compare = false);

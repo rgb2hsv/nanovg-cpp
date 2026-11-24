@@ -15,7 +15,7 @@ This repository’s **`modernize-cpp`** branch extends upstream NanoVG with a C+
 - **Third-party headers** — `fontstash.h`, `stb_truetype.h`, and the tree’s `stb_image.h` are under [`src/thirdParty/`](src/thirdParty/).
 - **Build** — **CMake** is the supported route; **GLEW** is required via `find_package` or the `external/glew` submodule. **GLFW** is required for the stable C API examples (`example_stable_*`) and for C++ examples when SDL3 is not used (`external/glfw` submodule or system package). C++ example targets: `example_gl2`, `example_gl3`, `example_fbo`, **`example_vk`** (Vulkan). The stable C API equivalents are `example_stable_gl2`, `example_stable_gl3`, `example_stable_fbo`, **`example_stable_vk`**. The Vulkan targets, and the **`nanovg_vk`** library that implements the Vulkan C API, need only the Vulkan headers, taken from the pinned `external/Vulkan-Headers` submodule (never a system install), plus a Vulkan driver at runtime. Turn them off with `-DNANOVG_BUILD_VULKAN=OFF`.
 - **SDL3 (optional)** — C++ examples can use **SDL3** instead of GLFW: `-DNANOVG_USE_SDL3=ON`, with SDL3 from `find_package(SDL3)` or the **`external/SDL`** git submodule. Window creation is wrapped in [`example/nvg_window_sdl3.cpp`](example/nvg_window_sdl3.cpp) / [`nvg_window_glfw.cpp`](example/nvg_window_glfw.cpp). CMake option **`NVG_FAST_SQRT`** toggles the fast inverse-sqrt path in the core (`NANOVG_FAST_SQRT`).
-- **Example layout** — C++ sources and shared `demo.cpp` / `perf.cpp` stay in [`example/`](example/). The stable C API examples and their `demo.c` / `perf.c` are under [`example/stable/`](example/stable/). `demo.c` is kept in step with `demo.cpp`, including the draw-calls panel, so the C and C++ examples render the same frames.
+- **Example layout** — C++ sources and shared `demo.cpp` / `perf.cpp` stay in [`example/`](example/). The stable C API examples and their `demo.c` / `perf.c` are under [`example/stable/`](example/stable/). `demo.c` is kept in step with `demo.cpp`, including both tiled panels, so the C and C++ examples render the same frames.
 - **Removed** — Monolithic `src/nanovg.c` and the old split `obsolete/nanovg_gl2.h` / `obsolete/nanovg_gl3.h` tree; legacy Premake build files are gone in favor of CMake.
 
 ### Headless check
@@ -23,7 +23,9 @@ This repository’s **`modernize-cpp`** branch extends upstream NanoVG with a C+
 The `example_gl3`, `example_vk`, `example_stable_gl3` and `example_stable_vk` binaries accept `--test N` (and `--test=N`) to run a fixed-frame capture path useful for CI (see `.cursor/skills/verify` in this repo). Each run writes `screenshotNNN.png` to the working directory and compares it against an existing file of the same name, so running two of them from the same directory checks one against the other (Vulkan against GL, or the stable C API against C++). The two agree to within 2/255 per channel, apart from occasional single rows where an edge falls exactly on a pixel center (GL and Vulkan resolve that tie differently).
 
 ## Screenshot
-<img width="1200" height="1000" alt="NanoVG++ demo: classic widgets on top, Skia-style draw calls panel below" src="docs/demo.png" />
+<img width="1200" height="1000" alt="NanoVG++ demo: classic NanoVG demo tiles on top, Skia-style draw calls panel below" src="docs/demo.png" />
+
+The demo is split into labeled tiles. The top panel is the classic NanoVG demo (widgets, eyes, color wheel, graph, text paragraph, line joins and caps, scissor, …), one tile per feature, each naming the draw calls it exercises; the bottom panel has one tile per Skia-style draw call and newer feature.
 
 Usage
 =====

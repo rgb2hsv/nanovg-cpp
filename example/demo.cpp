@@ -1276,63 +1276,35 @@ void drawScaledText(nvg::Context& vg, float x0, float y0, float t)
     vg.restore();
 }
 
-void renderDemo(nvg::Context& vg, float mx, float my, float width, float height, float t, int blowup, DemoData& data)
+// Draws a demo tile: background, title and, when given, a line or two naming the calls it exercises.
+// Returns the height of that header (the tile's content goes below it).
+static float drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title, const char* calls = nullptr);
+
+// One tile of the classic demo: its place in the panel grid, the size of the design space its
+// content is drawn in (scaled down to fit the tile), and the drawing.
+struct ClassicTile {
+    const char* title;
+    const char* calls;
+    int col, row, colSpan, rowSpan;
+    float designW, designH;
+    // mx, my: the mouse in the tile's design space.
+    void (*draw)(nvg::Context& vg, float mx, float my, float t, int blowup, DemoData& data);
+};
+
+static void classicWidgets(nvg::Context& vg, float mx, float my, float t, int blowup, DemoData& data)
 {
-    float x, y, popy;
-
-    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
-    const float drawCallsHeight = std::floor(height * 0.4f);
-    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
-    height -= drawCallsHeight;
-
-    drawEyes(vg, width - 230, 30, 150, 100, mx, my, t);
-    drawStylizedLines(vg, width - 245, 15, 180, 130);
-    drawParagraph(vg, width - 450, 50, 150, 100, mx, my);
-    drawGraph(vg, 0, height / 2, width, height / 2, t);
-    drawColorwheel(vg, width - 280, height - 320, 250.0f, 250.0f, t);
-
-    // Line joints
-
-    switch ((int)(t / 5.0f) % 3) {
-        case 0:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Dashed));
-            break;
-        case 1:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Dotted));
-            break;
-        case 2:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Glow));
-            break;
-        default:
-            vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
-    }
-    drawLines(vg, 100, height - 5, 800, 100, 10.0f, nvg::rgba(255, 153, 0, 255), t * 3);
-
-    vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
-    drawLines(vg, 120, height - 75, 600, 50, 17.0f, nvg::rgba(0, 0, 0, 160), t);
-
-    // Line caps
-    drawWidths(vg, 10, 50, 30);
-
-    // Line caps
-    drawCaps(vg, 10, 300, 30);
-
-    drawScissor(vg, 50, height - 80, t);
-
-    vg.save();
+    UNUSED(mx);
+    UNUSED(my);
     if (blowup) {
         vg.rotate(sinf(t * 0.3f) * 5.0f / 180.0f * (float)M_PI);
         vg.scale(2.0f, 2.0f);
     }
-
-    // Widgets
-    drawWindow(vg, "Widgets `n Stuff", 50, 50, 300, 400);
-    x = 60;
-    y = 95;
+    drawWindow(vg, "Widgets `n Stuff", 0, 0, 300, 400);
+    float x = 10, y = 45;
     drawSearchBox(vg, "Search", x, y, 280, 25);
     y += 40;
     drawDropDown(vg, "Effects", x, y, 280, 28);
-    popy = y + 14;
+    const float popy = y + 14;
     y += 45;
 
     // Form
@@ -1356,19 +1328,91 @@ void renderDemo(nvg::Context& vg, float mx, float my, float width, float height,
     drawButton(vg, ICON_TRASH, "Delete", x, y, 160, 28, nvg::rgba(128, 16, 8, 255));
     drawButton(vg, 0, "Cancel", x + 170, y, 110, 28, nvg::rgba(0, 0, 0, 0));
 
-    // Thumbnails box
-    drawThumbnails(vg, 365, popy - 30, 160, 300, data.images.data(), (int)data.images.size(), t);
+    // Thumbnails popup, pointing at the drop-down.
+    drawThumbnails(vg, 315, popy - 30, 160, 300, data.images.data(), (int)data.images.size(), t);
+}
 
-    vg.restore();
+static void classicLines(nvg::Context& vg, float mx, float my, float t, int blowup, DemoData& data)
+{
+    UNUSED(mx);
+    UNUSED(my);
+    UNUSED(blowup);
+    UNUSED(data);
+    // The line style cycles every 5 seconds.
+    static const nvg::LineStyle styles[] = {nvg::LineStyle::Dashed, nvg::LineStyle::Dotted, nvg::LineStyle::Glow};
+    vg.lineStyle(static_cast<int>(styles[(int)(t / 5.0f) % 3]));
+    drawLines(vg, 10, 60, 600, 60, 10.0f, nvg::rgba(255, 153, 0, 255), t * 3);
+    vg.lineStyle(static_cast<int>(nvg::LineStyle::Solid));
+    drawLines(vg, 10, 140, 600, 50, 17.0f, nvg::rgba(0, 0, 0, 160), t);
+}
 
-    drawBezierCurve(vg, width - 380, height - 220, 100, t);
-    drawScaledText(vg, 450.0, 50, t);
+void renderClassicDemo(nvg::Context& vg, float x, float y, float width, float height, float mx, float my, float t, int blowup, DemoData& data)
+{
+    using V = nvg::Context&;
+    using D = DemoData&;
+    static const ClassicTile tiles[] = {
+        {"Widgets & thumbnail popup", "roundedRect, boxGradient drop shadows, linear / radial gradients, icon-font text, imagePattern thumbnails clipped by scissor, arc spinners",
+         0, 0, 2, 3, 480, 410, classicWidgets},
+        {"Eyes", "ellipse with radial and linear gradients; LineStyle::Dashed frame", 2, 0, 1, 1, 190, 140,
+         [](V v, float lx, float ly, float tt, int, D) {
+             drawEyes(v, 20, 20, 150, 100, lx, ly, tt);
+             drawStylizedLines(v, 5, 5, 180, 130);
+         }},
+        {"Color wheel", "arc segments with linear gradients, rotate, boxGradient marker", 3, 0, 1, 1, 290, 250,
+         [](V v, float, float, float tt, int, D) { drawColorwheel(v, 0, 0, 250.0f, 250.0f, tt); }},
+        {"Graph", "bezierTo curve, linearGradient area fill, shadowed stroke, radialGradient points", 4, 0, 2, 1, 420, 150,
+         [](V v, float, float, float tt, int, D) { drawGraph(v, 10, 5, 400, 140, tt); }},
+        {"Text paragraph", "textBreakLines, textGlyphPositions caret hit-testing (hover), textBoxBounds, emoji fallback font, textBox tooltip", 2, 1, 1, 2, 170, 225,
+         [](V v, float lx, float ly, float, int, D) { drawParagraph(v, 10, 10, 150, 100, lx, ly); }},
+        {"Bezier curve", "bezierTo, stroked Solid then LineStyle::Dashed", 3, 1, 1, 1, 140, 140,
+         [](V v, float, float, float tt, int, D) { drawBezierCurve(v, 70, 70, 60, tt); }},
+        {"Line joins & caps", "Miter / Round / Bevel joins x Butt / Round / Square caps; LineStyle Dashed / Dotted / Glow, cycling", 4, 1, 2, 1, 620, 155,
+         classicLines},
+        {"Scissor", "scissor + intersectScissor under rotate", 3, 2, 1, 1, 130, 115,
+         [](V v, float, float, float tt, int, D) { drawScissor(v, 25, 60, tt); }},
+        {"Widths & caps", "strokeWidth 0.05 - 1.95 (hairlines), lineCap", 4, 2, 1, 1, 160, 225,
+         [](V v, float, float, float, int, D) {
+             drawWidths(v, 10, 10, 60);
+             drawCaps(v, 90, 10, 60);
+         }},
+        {"Scaled text", "text() under an animated scale", 5, 2, 1, 1, 220, 90,
+         [](V v, float, float, float tt, int, D) { drawScaledText(v, 110, 45, tt); }},
+    };
+
+    constexpr int cols = 6, rows = 3;
+    const float pad = 10.0f, top = 10.0f;
+    const float cw = (width - pad * (cols + 1)) / cols;
+    const float ch = (height - top - pad * rows) / rows;
+    if (cw <= 0.0f || ch <= 0.0f) return;
+    for (const ClassicTile& tile : tiles) {
+        const nvg::Rect c{x + pad + tile.col * (cw + pad), y + top + tile.row * (ch + pad), cw * tile.colSpan + pad * (tile.colSpan - 1), ch * tile.rowSpan + pad * (tile.rowSpan - 1)};
+        vg.save();
+        const float header = drawCallsCell(vg, c, tile.title, tile.calls);
+        // Scale the design space down (never up) to fit under the header, centered.
+        const float areaH = c.h - header - 4.0f;
+        const float s = std::min({1.0f, (c.w - 8.0f) / tile.designW, areaH / tile.designH});
+        if (s > 0.0f) {
+            const float ox = c.x + (c.w - tile.designW * s) * 0.5f, oy = c.y + header + (areaH - tile.designH * s) * 0.5f;
+            vg.translate(ox, oy);
+            vg.scale(s, s);
+            tile.draw(vg, (mx - ox) / s, (my - oy) / s, t, blowup, data);
+        }
+        vg.restore();
+    }
+}
+
+void renderDemo(nvg::Context& vg, float mx, float my, float width, float height, float t, int blowup, DemoData& data)
+{
+    // The classic demo uses the top 60% of the window; the Skia-style draw-call showcase fills the rest.
+    const float drawCallsHeight = std::floor(height * 0.4f);
+    renderClassicDemo(vg, 0, 0, width, height - drawCallsHeight, mx, my, t, blowup, data);
+    renderDrawCallsDemo(vg, 0, height - drawCallsHeight, width, drawCallsHeight, t, data);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Draw-calls demo page: one cell per Skia-style immediate draw call.
 
-static void drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title)
+static float drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* title, const char* calls)
 {
     vg.fillColor(nvg::rgba(255, 255, 255, 12));
     vg.strokeColor(nvg::rgba(255, 255, 255, 40));
@@ -1383,6 +1427,17 @@ static void drawCallsCell(nvg::Context& vg, const nvg::Rect& cell, const char* t
     if (titleW > maxW && maxW > 0.0f) vg.fontSize(13.0f * maxW / titleW);
     vg.fillColor(nvg::rgba(255, 255, 255, 180));
     vg.text(cell.x + 8, cell.y + 6, title, nullptr);
+    if (calls == nullptr || maxW <= 0.0f) return 0.0f;
+
+    vg.fontSize(11.0f);
+    vg.fontFace("sans");
+    vg.textLineHeight(1.1f);
+    vg.fillColor(nvg::rgba(160, 200, 255, 170));
+    std::array<float, 4> b{};
+    vg.textBoxBounds(cell.x + 8, cell.y + 23, maxW, calls, nullptr, b.data());
+    vg.textBox(cell.x + 8, cell.y + 23, maxW, calls, nullptr);
+    vg.textLineHeight(1.0f);
+    return b[3] - cell.y + 4.0f;
 }
 
 static void demoRects(nvg::Context& vg, const nvg::Rect& c, float t)
