@@ -1399,7 +1399,7 @@ void Context::strokePath(bool withMarkers)
     }
     strokePass(stroke, 0.0f, blur, 0.0f, 0.0f, nullptr);
     const State& st = mImpl->topState();
-    if (st.strokeInnerShadowColor.a > 0.0f && mImpl->params.renderStrokeInnerShadow && mImpl->params.edgeAntiAlias && st.shapeAntiAlias) {
+    if (st.strokeInnerShadowColor.a > 0.0f && mImpl->params.renderStrokeEffect && mImpl->params.edgeAntiAlias && st.shapeAntiAlias) {
         // Offset and blur in framebuffer pixels: the shader measures the band with screen derivatives.
         const float* xf = st.xform.data();
         const float px = mImpl->devicePxRatio;
@@ -1420,11 +1420,19 @@ void Context::strokePass(const Paint& paint, float extraWidth, float blur, float
     float strokeWidth = detail::clampf((state.strokeWidth + extraWidth * 2.0f) * scale, 0.0f, 1000.0f);
     Paint strokePaint = paint;
     const bool aa = mImpl->params.edgeAntiAlias && state.shapeAntiAlias;
-    // A blurred edge is a wide antialiasing ramp: coverage falls off linearly over 2 x blur, centered
-    // on the stroke's edge.
-    const float fringe = aa ? std::max(mImpl->fringeWidth, std::min(blur * scale * 2.0f, 200.0f)) : mImpl->fringeWidth;
+    // A blurred stroke is drawn with a Gaussian measured from the true distance to the stroke (the same
+    // sigma as the font atlas blur), through renderStrokeEffect; without it, as a wide linear
+    // antialiasing ramp centered on the edge.
+    const bool blurred = aa && blur > 0.0f && innerShadow == nullptr;
+    const bool gaussian = blurred && mImpl->params.renderStrokeEffect != nullptr;
+    const float sigma = std::max(blur * scale * 0.57735f, mImpl->fringeWidth * 0.4f);
+    float fringe = mImpl->fringeWidth;
+    if (gaussian)
+        fringe = 2.0f * (std::min(3.0f * sigma, 300.0f) + mImpl->fringeWidth);  // geometry reaches 3 sigma past the edge
+    else if (blurred)
+        fringe = std::max(mImpl->fringeWidth, std::min(blur * scale * 2.0f, 200.0f));
 
-    if (strokeWidth < mImpl->fringeWidth) {
+    if (!gaussian && strokeWidth < mImpl->fringeWidth) {
         // If the stroke width is less than pixel size, use alpha to emulate coverage.
         // Since coverage is area, scale by alpha*alpha.
         float alpha = detail::clampf(strokeWidth / mImpl->fringeWidth, 0.0f, 1.0f);
@@ -1473,21 +1481,27 @@ void Context::strokePass(const Paint& paint, float extraWidth, float blur, float
         mImpl->dashPaths(deviceDashes.data(), state.ndashes, state.dashOffset * scale, state.lineCap);
     }
 
-    // The inner shadow measures the band from its across coordinate, so it uses plain (solid) geometry.
-    const int lineStyle = innerShadow ? static_cast<int>(LineStyle::Solid) : state.lineStyle;
+    // The effect passes rewrite or read the vertices' coordinates, so they use plain (solid) geometry.
+    const int lineStyle = (innerShadow || gaussian) ? static_cast<int>(LineStyle::Solid) : state.lineStyle;
     if (aa)
         mImpl->expandStroke(strokeWidth * 0.5f, fringe, state.lineCap, state.lineJoin, lineStyle, state.miterLimit);
     else
         mImpl->expandStroke(strokeWidth * 0.5f, 0.0f, state.lineCap, state.lineJoin, lineStyle, state.miterLimit);
 
-    if (innerShadow) {
-        const float shadow[4] = {innerShadow[0], innerShadow[1], innerShadow[2], (strokeWidth * 0.5f + fringe * 0.5f) * mImpl->devicePxRatio};
-        mImpl->params.renderStrokeInnerShadow(mImpl->params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, fringe, strokeWidth, shadow, mImpl->cache->paths.data(),
-                                              static_cast<int>(mImpl->cache->paths.size()));
+    const Params& params = mImpl->params;
+    Path* paths = mImpl->cache->paths.data();
+    const int npaths = static_cast<int>(mImpl->cache->paths.size());
+    if (gaussian) {
+        mImpl->strokeDistanceCoords(state.lineCap, strokeWidth * 0.5f);
+        const float effect[4] = {strokeWidth * 0.5f, sigma, 0.0f, state.lineCap == static_cast<int>(LineCap::Round) ? -2.0f : -1.0f};
+        // The regular fringe: the backend also derives the scissor's antialiasing from it.
+        params.renderStrokeEffect(params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, mImpl->fringeWidth, strokeWidth, effect, paths, npaths);
+    } else if (innerShadow) {
+        const float effect[4] = {innerShadow[0], innerShadow[1], innerShadow[2], (strokeWidth * 0.5f + fringe * 0.5f) * mImpl->devicePxRatio};
+        params.renderStrokeEffect(params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, fringe, strokeWidth, effect, paths, npaths);
+    } else {
+        params.renderStroke(params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, fringe, strokeWidth, lineStyle, paths, npaths);
     }
-    else
-        mImpl->params.renderStroke(mImpl->params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, fringe, strokeWidth, lineStyle, mImpl->cache->paths.data(),
-                                   static_cast<int>(mImpl->cache->paths.size()));
 
     // Count triangles
     for (const Path& path : mImpl->cache->paths) {

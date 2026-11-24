@@ -192,7 +192,7 @@ struct GlFragUniforms {
     float shapeMat[12];  // device -> shape space
     float shapeRect[4];  // Shape::params[0..3]
     float shapeGrid[4];  // Shape::params[4..7]
-    float strokeShadow[4];  // stroke inner shadow: offset x, y, blur, band half width (framebuffer px); w = 0: off
+    float strokeEffect[4];  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
 #else
 // note: after modifying layout or size of uniform array,
 // don't forget to also update the fragment shader source!
@@ -223,7 +223,7 @@ struct GlFragUniforms {
             float shapeMat[12];  // device -> shape space
             float shapeRect[4];  // Shape::params[0..3]
             float shapeGrid[4];  // Shape::params[4..7]
-            float strokeShadow[4];  // stroke inner shadow: offset x, y, blur, band half width (framebuffer px); w = 0: off
+            float strokeEffect[4];  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
         };
         float uniformArray[NANOVG_GL_UNIFORMARRAY_SIZE][4];
     };
@@ -597,7 +597,7 @@ void main(void) {
 		mat3 shapeMat;
 		vec4 shapeRect;
 		vec4 shapeGrid;
-		vec4 strokeShadow;
+		vec4 strokeEffect;
 	};
 #else
 	uniform vec4 frag[UNIFORMARRAY_SIZE];
@@ -635,7 +635,7 @@ void main(void) {
 	#define shapeMat mat3(frag[12].xyz, frag[13].xyz, frag[14].xyz)
 	#define shapeRect frag[15]
 	#define shapeGrid frag[16]
-	#define strokeShadow frag[17]
+	#define strokeEffect frag[17]
 #endif
 
 // Analytic shapes (drawGrid / drawArrow): coverage of the shape at p (shape space).
@@ -701,9 +701,27 @@ float scissorMask(vec2 p) {
 	return clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);
 }
 #ifdef EDGE_AA
-// Stroke inner shadow: one minus the coverage of the stroke band moved by strokeShadow.xy and blurred
-// by strokeShadow.z, for a band of half width strokeShadow.w (framebuffer px). ftcoord.x runs 0..1 across
+// Stroke inner shadow: one minus the coverage of the stroke band moved by strokeEffect.xy and blurred
+// by strokeEffect.z, for a band of half width strokeEffect.w (framebuffer px). ftcoord.x runs 0..1 across
 // the band, so its screen-space gradient gives the band's normal at this pixel.
+// Gaussian-blurred stroke (strokeEffect.w < 0): the vertices carry distance coordinates, ftcoord.x =
+// signed distance across the center line, ftcoord.y = distance from the path's start, uv.x * 2 = distance
+// to its end. phi is the normal CDF (logistic approximation); the band profile is phi(hw - d) - phi(-hw - d).
+float phi(float x) {
+	return 1.0 / (1.0 + exp(-1.702 * x));
+}
+float strokeBlurCoverage() {
+	float hw = strokeEffect.x, sig = strokeEffect.y;
+	float a0 = ftcoord.y, a1 = uv.x * 2.0;
+	if (strokeEffect.w < -1.5) {  // round ends: distance to the capsule's core segment
+		float r = length(vec2(ftcoord.x, max(max(-a0, -a1), 0.0)));
+		return phi((hw - r) / sig) - phi((-hw - r) / sig);
+	}
+	// butt / square ends: a box, blurred across times blurred along
+	float d = abs(ftcoord.x);
+	float across = phi((hw - d) / sig) - phi((-hw - d) / sig);
+	return across * clamp(phi(a0 / sig) + phi(a1 / sig) - 1.0, 0.0, 1.0);
+}
 // g: screen-space gradient of ftcoord.x, taken in main() before any discard (derivatives after one
 // are undefined).
 float strokeInnerShadow(vec2 g) {
@@ -711,11 +729,11 @@ float strokeInnerShadow(vec2 g) {
 	float a = ftcoord.x;
 	float gl = length(g);
 	if (gl < 1e-6) return 0.0;
-	float halfW = strokeShadow.w;               // half width including the antialiasing ramp
+	float halfW = strokeEffect.w;               // half width including the antialiasing ramp
 	float edge = halfW * (1.0 - 0.5 / strokeMult);  // nominal half width (the middle of the ramp)
 	float p = (a - 0.5) * 2.0 * halfW;          // signed distance from the center line
-	float s = dot(strokeShadow.xy, g / gl); // offset across the band
-	float b = max(strokeShadow.z * 2.0, 1.0);
+	float s = dot(strokeEffect.xy, g / gl); // offset across the band
+	float b = max(strokeEffect.z * 2.0, 1.0);
 	return 1.0 - clamp((edge - abs(p - s)) / b + 0.5, 0.0, 1.0);
 #else
 	return 0.0;
@@ -759,7 +777,7 @@ void main(void) {
 	vec2 strokeGrad = vec2(0.0);
 #endif
 #ifdef EDGE_AA
-	float strokeAlpha = strokeMask();
+	float strokeAlpha = strokeEffect.w < 0.0 ? strokeBlurCoverage() : strokeMask();
 if(lineStyle == 2) strokeAlpha*=dashed(uv);
 if(lineStyle == 3) strokeAlpha*=dotted(uv);
 if(lineStyle == 4) strokeAlpha*=glow(uv);
@@ -818,7 +836,7 @@ if (lineStyle > 1 && strokeAlpha < strokeThr) discard;
 	}
 	if (shapeType != 0) result *= shapeCoverage((shapeMat * vec3(fpos, 1.0)).xy);
 #ifdef EDGE_AA
-	if (strokeShadow.w > 0.0) result *= strokeInnerShadow(strokeGrad);
+	if (strokeEffect.w > 0.0) result *= strokeInnerShadow(strokeGrad);
 #endif
 #ifdef NANOVG_GL3
 	outColor = result;
@@ -1584,7 +1602,7 @@ error:
 }
 
 static void glnvg__strokeCall(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths,
-                              const float* innerShadow)
+                              const float* effect)
 {
     GLContext* gl = (GLContext*)uptr;
     GlCall* call = glnvg__allocCall(gl);
@@ -1630,14 +1648,14 @@ static void glnvg__strokeCall(void* uptr, Paint* paint, CompositeOperationState 
         if (call->uniformOffset == -1) goto error;
         glnvg__convertPaint(gl, nvg::detail::fragUniformPtr(gl, call->uniformOffset), paint, scissor, strokeWidth, fringe, -1.0f, lineStyle);
     }
-    if (innerShadow) {
+    if (effect) {
         const int nfrags = (gl->flags & CreateFlags::StencilStrokes) ? 2 : 1;
         for (i = 0; i < nfrags; i++) {
             GlFragUniforms* frag = nvg::detail::fragUniformPtr(gl, call->uniformOffset + i * gl->fragSize);
-            frag->strokeShadow[0] = innerShadow[0];
-            frag->strokeShadow[1] = innerShadow[1];
-            frag->strokeShadow[2] = innerShadow[2];
-            frag->strokeShadow[3] = innerShadow[3];
+            frag->strokeEffect[0] = effect[0];
+            frag->strokeEffect[1] = effect[1];
+            frag->strokeEffect[2] = effect[2];
+            frag->strokeEffect[3] = effect[3];
         }
     }
 
@@ -1654,10 +1672,10 @@ static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationStat
     glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, lineStyle, paths, npaths, NULL);
 }
 
-static void glnvg__renderStrokeInnerShadow(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* shadow,
+static void glnvg__renderStrokeEffect(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* effect,
                                            const Path* paths, int npaths)
 {
-    glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, shadow);
+    glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, effect);
 }
 
 static void glnvg__renderTriangles(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
@@ -1841,7 +1859,7 @@ std::unique_ptr<Context> createGL(int flags)
     params.renderTriangles = glnvg__renderTriangles;
     params.renderShape = glnvg__renderShape;
     params.renderMaskedPaint = glnvg__renderMaskedPaint;
-    params.renderStrokeInnerShadow = glnvg__renderStrokeInnerShadow;
+    params.renderStrokeEffect = glnvg__renderStrokeEffect;
     params.renderDelete = glnvg__renderDelete;
     params.userPtr = gl;
     params.edgeAntiAlias = flags & CreateFlags::Antialias ? 1 : 0;

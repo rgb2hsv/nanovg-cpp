@@ -176,7 +176,7 @@ struct FragUniforms {
     float shapeMat[12];  // device -> shape space (3 vec4 columns)
     float shapeRect[4];  // Shape::params[0..3]
     float shapeGrid[4];  // Shape::params[4..7]
-    float strokeShadow[4];  // stroke inner shadow: offset x, y, blur, band half width (framebuffer px); w = 0: off
+    float strokeEffect[4];  // stroke effect (Params::renderStrokeEffect): w > 0 inner shadow, w < 0 Gaussian blur, 0 off
 };
 static_assert(sizeof(FragUniforms) == 288, "FragUniforms must match the std430 array stride of the shader struct");
 static_assert(offsetof(FragUniforms, shapeMat) == 192, "mat3 in std430 is 16-byte aligned");
@@ -1527,7 +1527,7 @@ static void renderFill(void* uptr, Paint* paint, CompositeOperationState composi
 }
 
 static void strokeCall(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths,
-                       const float* innerShadow)
+                       const float* effect)
 {
     VkContext* vk = static_cast<VkContext*>(uptr);
     Call call{};
@@ -1551,13 +1551,13 @@ static void strokeCall(void* uptr, Paint* paint, CompositeOperationState composi
         call.uniformOffset = allocUniforms(vk, 1);
         ok = convertPaint(vk, &vk->uniforms[call.uniformOffset], paint, scissor, strokeWidth, fringe, -1.0f, lineStyle);
     }
-    if (ok && innerShadow) {
+    if (ok && effect) {
         for (int i = 0; i < nuniforms; i++) {
-            float* s = vk->uniforms[call.uniformOffset + i].strokeShadow;
-            s[0] = innerShadow[0];
-            s[1] = innerShadow[1];
-            s[2] = innerShadow[2];
-            s[3] = innerShadow[3];
+            float* s = vk->uniforms[call.uniformOffset + i].strokeEffect;
+            s[0] = effect[0];
+            s[1] = effect[1];
+            s[2] = effect[2];
+            s[3] = effect[3];
         }
     }
     if (ok) pushCall(vk, call, nuniforms);
@@ -1568,10 +1568,10 @@ static void renderStroke(void* uptr, Paint* paint, CompositeOperationState compo
     strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, lineStyle, paths, npaths, nullptr);
 }
 
-static void renderStrokeInnerShadow(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* shadow, const Path* paths,
+static void renderStrokeEffect(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* effect, const Path* paths,
                                     int npaths)
 {
-    strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, shadow);
+    strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, effect);
 }
 
 static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
@@ -1707,7 +1707,7 @@ static VkContext* newContext(const VkCreateInfo& createInfo, int flags, Params* 
     params->renderTriangles = renderTriangles;
     params->renderShape = renderShape;
     params->renderMaskedPaint = renderMaskedPaint;
-    params->renderStrokeInnerShadow = renderStrokeInnerShadow;
+    params->renderStrokeEffect = renderStrokeEffect;
     params->renderDelete = renderDelete;
     params->userPtr = vk;
     params->edgeAntiAlias = (flags & CreateFlags::Antialias) ? 1 : 0;

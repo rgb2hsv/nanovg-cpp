@@ -373,7 +373,7 @@ void nvgMarkers(NVGcontext* ctx, NVGmarker marker);
 // See nvg::Context::strokeOuterShadow and the calls after it.
 // Soft shadow under the stroke (no offset + bright color = glow); zero alpha = off.
 void nvgStrokeOuterShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color);
-// Inner shadow over the stroke (needs NVGparams.renderStrokeInnerShadow); zero alpha = off.
+// Inner shadow over the stroke (needs NVGparams.renderStrokeEffect); zero alpha = off.
 void nvgStrokeInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color);
 // Outline of the given width around the stroke, drawn under it; zero width or alpha = off.
 void nvgStrokeOutline(NVGcontext* ctx, float width, NVGcolor color);
@@ -957,11 +957,12 @@ struct NVGparams {
     // pixel as in renderFill, scaled by the alpha texture mask sampled at the vertices' u, v. Used for
     // gradient-filled text (NVG_TEXT_FILL_PAINT); without it such text uses the paint's inner color.
     void (*renderMaskedPaint)(void* uptr, NVGpaint* paint, int mask, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, const NVGvertex* verts, int nverts, float fringe);
-    // Optional (may be NULL): draws paths' stroke geometry like renderStroke (solid), with the paint scaled
-    // per pixel by an inner-shadow factor: one minus the coverage of the band moved by (shadow[0], shadow[1])
-    // and blurred by shadow[2], shadow[3] being the band's half width incl. the AA ramp (framebuffer px). nvgStrokeInnerShadow is skipped without it.
-    void (*renderStrokeInnerShadow)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, float strokeWidth, const float* shadow,
-                                    const NVGpath* paths, int npaths);
+    // Optional (may be NULL): draws paths' stroke geometry like renderStroke (solid) with a per-pixel
+    // stroke effect: effect[3] > 0 inner shadow, < 0 Gaussian-blurred stroke with distance coordinates in
+    // the vertices. See nvg::Params::renderStrokeEffect for the exact contract. Without it, blurred strokes
+    // use a linear antialiasing ramp and nvgStrokeInnerShadow is skipped.
+    void (*renderStrokeEffect)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, float strokeWidth, const float* effect,
+                               const NVGpath* paths, int npaths);
 };
 typedef struct NVGparams NVGparams;
 

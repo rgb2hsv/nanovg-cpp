@@ -1890,8 +1890,9 @@ static void demoStrokeEffects(NVGcontext* vg, NVGrect c, float t, const DemoData
     nvgLineJoin(vg, NVG_ROUND);
     nvgStrokeWidth(vg, 9.0f);
 
-    // Outer shadow whose light source moves around.
+    // Outer shadow whose light source moves around (butt caps: the shadow's ends are a blurred box).
     nvgSave(vg);
+    nvgLineCap(vg, NVG_BUTT);
     nvgStrokeOuterShadow(vg, 4.0f * cosf(t), 4.0f + 2.0f * sinf(t), 4.0f, nvgRGBA(0, 0, 0, 230));
     nvgStrokeColor(vg, nvgRGBA(255, 200, 60, 255));
     strokeEffectsWave(vg, c.x + 15, c.y + 62, w);
@@ -1901,7 +1902,7 @@ static void demoStrokeEffects(NVGcontext* vg, NVGrect c, float t, const DemoData
 
     // Glow: an unshifted, colored outer shadow, pulsing.
     nvgSave(vg);
-    nvgStrokeOuterShadow(vg, 0.0f, 0.0f, 6.0f + 3.0f * sinf(t * 2.0f), nvgRGBA(80, 200, 255, 255));
+    nvgStrokeOuterShadow(vg, 0.0f, 0.0f, 10.0f + 4.0f * sinf(t * 2.0f), nvgRGBA(80, 200, 255, 255));
     nvgStrokeColor(vg, nvgRGBA(230, 250, 255, 255));
     nvgStrokeWidth(vg, 5.0f);
     strokeEffectsWave(vg, c.x + c.w * 0.5f + 15, c.y + 62, w);

@@ -366,13 +366,20 @@ struct Params {
     // sampled at the vertices' u, v. Used for gradient-filled text (TextFill::Paint); without it such text
     // falls back to the paint's inner color.
     void (*renderMaskedPaint)(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe);
-    // Optional (may be null): draws paths' stroke geometry like renderStroke (solid line style), with
-    // the paint scaled per pixel by an inner-shadow factor: one minus the coverage of the stroke band
-    // moved by (shadow[0], shadow[1]) and blurred by shadow[2], where shadow[3] is the band's half width
-    // including the antialiasing ramp (strokeWidth / 2 + fringe / 2), all in framebuffer pixels, so the
-    // band's edges facing away from the offset are shaded. Context::strokeInnerShadow is skipped without it.
-    void (*renderStrokeInnerShadow)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* shadow, const Path* paths,
-                                    int npaths);
+    // Optional (may be null): draws paths' stroke geometry like renderStroke (solid line style) with a
+    // per-pixel stroke effect selected by effect[3]:
+    //  > 0  Inner shadow: the paint is scaled by one minus the coverage of the stroke band moved by
+    //       (effect[0], effect[1]) and blurred by effect[2], effect[3] being the band's half width
+    //       including the antialiasing ramp, all in framebuffer pixels (the vertices are as from
+    //       renderStroke; ftcoord.x runs 0..1 across the band).
+    //  < 0  Gaussian-blurred stroke: coverage is a Gaussian blur (sigma effect[1]) of the stroke of half
+    //       width effect[0], in vertex units. The vertices carry distance coordinates instead of the usual
+    //       ones: u = signed distance across the center line, v = distance along from the path's start,
+    //       s = distance along to its end (very large on closed paths). effect[3] = -1: butt / square
+    //       ends (a box: blurred across times blurred along), -2: round ends (a capsule).
+    // Context falls back to plain strokes (blur as a linear antialiasing ramp, no inner shadow) without it.
+    void (*renderStrokeEffect)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* effect, const Path* paths,
+                               int npaths);
 };
 
 #ifdef _MSC_VER
@@ -442,14 +449,16 @@ public:
     void strokeOuterShadow(float offsetX, float offsetY, float blur, const Color& color);
     // Inner shadow over the stroke, like textInnerShadow: color inside the stroke wherever a copy of it,
     // offset by (offsetX, offsetY) and blurred by blur, does not cover it, so an offset down-right shades
-    // the band's top-left edges. Needs Params::renderStrokeInnerShadow (the bundled GL and Vulkan
+    // the band's top-left edges. Needs Params::renderStrokeEffect (the bundled GL and Vulkan
     // backends; GLES2 also needs GL_OES_standard_derivatives). Zero alpha = off.
     void strokeInnerShadow(float offsetX, float offsetY, float blur, const Color& color);
     // An outline of the given width around the stroke, drawn under it in color (the stroke grown by
     // width on each side), like an outlined text style. Zero width or alpha = off.
     void strokeOutline(float width, const Color& color);
     // Blurs the stroke's own edges (and its outline) by blur, like fontBlur. 0 = sharp (the default).
-    // Blur and shadows need an antialiased context (CreateFlags::Antialias); without it they are sharp.
+    // Blurs (here and in the outer shadow) are Gaussian, measured from the true distance to the stroke,
+    // so round caps and joins stay round, through Params::renderStrokeEffect; without it they fall back
+    // to a linear ramp. They need an antialiased context (CreateFlags::Antialias).
     void strokeBlur(float blur);
     void lineCap(int cap);
     void lineJoin(int join);
@@ -570,7 +579,7 @@ private:
     void strokePath(bool withMarkers);
     // One stroke pass of the current path: paint, the stroke widened by extraWidth on each side, edges
     // blurred by blur, offset by (dx, dy) (local units); with innerShadow (device px: offset x, y, blur)
-    // it goes through Params::renderStrokeInnerShadow (the pass fills in the band's half width).
+    // it goes through Params::renderStrokeEffect (the pass fills in the band's half width).
     void strokePass(const Paint& paint, float extraWidth, float blur, float dx, float dy, const float* innerShadow);
     void textInnerShadowPass(float x, float y, const char* string, const char* end);
     float textOnPathPass(const TextPathGeometry& path, const char* string, const char* end, const TextPathOptions& options, float shiftX, float shiftY);
