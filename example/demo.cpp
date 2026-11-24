@@ -1665,20 +1665,32 @@ static void demoTextOnPath(nvg::Context& vg, const nvg::Rect& c, float t)
     wave.startOffset = 50.0f;
     wave.startOffsetPercent = true;
     vg.textOnPath("Text that follows the curve", nullptr, wave);
-    // A circle with text running around it, bent glyph by glyph (method="stretch"); the start offset
+    // Two circles. Left: text bent glyph by glyph (method="stretch") on the outside; the start offset
     // moves and wraps since the path is one closed subpath.
-    const float cx = c.x + c.w * 0.5f, cy = c.y + 132, r = 34.0f;
+    const float cy = c.y + 130, r = 30.0f;
     vg.beginPath();
-    vg.circle(cx, cy, r);
+    vg.circle(c.x + c.w * 0.27f, cy, r);
     vg.stroke();
-    vg.fontSize(15.0f);
+    vg.fontSize(14.0f);
     vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Baseline));
     vg.fillColor(nvg::rgba(80, 200, 255, 255));
     nvg::TextPathOptions ring;
     ring.startOffset = t * 30.0f;
     ring.method = nvg::TextPathMethod::Stretch;
     ring.baselineShift = -4.0f;
-    vg.textOnPath("round and round we go \xe2\x80\xa2 ", nullptr, ring);
+    vg.textOnPath("round and round we go ", nullptr, ring);
+    // Right: side="right" runs the text the other way round, and Middle centers it on the stroke.
+    vg.beginPath();
+    vg.circle(c.x + c.w * 0.73f, cy, r);
+    vg.strokeColor(nvg::rgba(255, 120, 160, 90));
+    vg.strokeWidth(16.0f);
+    vg.stroke();
+    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Middle));
+    vg.fillColor(nvg::rgba(255, 255, 255, 255));
+    nvg::TextPathOptions back;
+    back.startOffset = t * 30.0f;
+    back.side = nvg::TextPathSide::Right;
+    vg.textOnPath("side right, middle * ", nullptr, back);
     vg.restore();
 }
 

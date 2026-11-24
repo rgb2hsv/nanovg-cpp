@@ -1674,7 +1674,7 @@ static void demoTextOuterShadow(NVGcontext* vg, NVGrect c, float t, const DemoDa
 
 static void demoTextOnPath(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
 {
-    float a, cx, cy, r;
+    float a, cy, r;
     NVG_NOTUSED(data);
     nvgSave(vg);
     nvgFontFace(vg, "sans-bold");
@@ -1690,18 +1690,26 @@ static void demoTextOnPath(NVGcontext* vg, NVGrect c, float t, const DemoData* d
     nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
     nvgFillColor(vg, nvgRGBA(255, 200, 60, 255));
     nvgTextOnPath(vg, "Text that follows the curve", NULL, 50.0f, 0.0f, NVG_TEXTPATH_PERCENT);
-    // A circle with text running around it, bent glyph by glyph (method="stretch"); the start offset
+    // Two circles. Left: text bent glyph by glyph (method="stretch") on the outside; the start offset
     // moves and wraps since the path is one closed subpath.
-    cx = c.x + c.w * 0.5f;
-    cy = c.y + 132;
-    r = 34.0f;
+    cy = c.y + 130;
+    r = 30.0f;
     nvgBeginPath(vg);
-    nvgCircle(vg, cx, cy, r);
+    nvgCircle(vg, c.x + c.w * 0.27f, cy, r);
     nvgStroke(vg);
-    nvgFontSize(vg, 15.0f);
+    nvgFontSize(vg, 14.0f);
     nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_BASELINE);
     nvgFillColor(vg, nvgRGBA(80, 200, 255, 255));
-    nvgTextOnPath(vg, "round and round we go \xe2\x80\xa2 ", NULL, t * 30.0f, -4.0f, NVG_TEXTPATH_STRETCH);
+    nvgTextOnPath(vg, "round and round we go ", NULL, t * 30.0f, -4.0f, NVG_TEXTPATH_STRETCH);
+    // Right: side="right" runs the text the other way round, and Middle centers it on the stroke.
+    nvgBeginPath(vg);
+    nvgCircle(vg, c.x + c.w * 0.73f, cy, r);
+    nvgStrokeColor(vg, nvgRGBA(255, 120, 160, 90));
+    nvgStrokeWidth(vg, 16.0f);
+    nvgStroke(vg);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+    nvgTextOnPath(vg, "side right, middle * ", NULL, t * 30.0f, 0.0f, NVG_TEXTPATH_RIGHT);
     nvgRestore(vg);
 }
 
