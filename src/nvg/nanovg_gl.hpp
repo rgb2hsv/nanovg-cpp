@@ -192,10 +192,11 @@ struct GlFragUniforms {
     float shapeMat[12];  // device -> shape space
     float shapeRect[4];  // Shape::params[0..3]
     float shapeGrid[4];  // Shape::params[4..7]
+    float strokeShadow[4];  // stroke inner shadow: offset x, y, blur, band half width (framebuffer px); w = 0: off
 #else
 // note: after modifying layout or size of uniform array,
 // don't forget to also update the fragment shader source!
-#define NANOVG_GL_UNIFORMARRAY_SIZE 17
+#define NANOVG_GL_UNIFORMARRAY_SIZE 18
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4201)  // nonstandard extension: nameless struct/union
@@ -222,6 +223,7 @@ struct GlFragUniforms {
             float shapeMat[12];  // device -> shape space
             float shapeRect[4];  // Shape::params[0..3]
             float shapeGrid[4];  // Shape::params[4..7]
+            float strokeShadow[4];  // stroke inner shadow: offset x, y, blur, band half width (framebuffer px); w = 0: off
         };
         float uniformArray[NANOVG_GL_UNIFORMARRAY_SIZE][4];
     };
@@ -528,7 +530,7 @@ static int glnvg__renderCreate(void* uptr)
         R"NVG(#define USE_UNIFORMBUFFER 1
 )NVG"
 #else
-        R"NVG(#define UNIFORMARRAY_SIZE 17
+        R"NVG(#define UNIFORMARRAY_SIZE 18
 )NVG"
 #endif
         R"NVG(
@@ -559,6 +561,12 @@ void main(void) {
 )NVG";
 
     static const char* fillFragShader = R"NVG(
+#if defined(GL_ES) && !defined(NANOVG_GL3)
+#extension GL_OES_standard_derivatives : enable
+#endif
+#if !defined(GL_ES) || defined(NANOVG_GL3) || defined(GL_OES_standard_derivatives)
+#define HAVE_DERIVATIVES 1
+#endif
 #ifdef GL_ES
 #if defined(GL_FRAGMENT_PRECISION_HIGH) || defined(NANOVG_GL3)
  precision highp float;
@@ -589,6 +597,7 @@ void main(void) {
 		mat3 shapeMat;
 		vec4 shapeRect;
 		vec4 shapeGrid;
+		vec4 strokeShadow;
 	};
 #else
 	uniform vec4 frag[UNIFORMARRAY_SIZE];
@@ -626,6 +635,7 @@ void main(void) {
 	#define shapeMat mat3(frag[12].xyz, frag[13].xyz, frag[14].xyz)
 	#define shapeRect frag[15]
 	#define shapeGrid frag[16]
+	#define strokeShadow frag[17]
 #endif
 
 // Analytic shapes (drawGrid / drawArrow): coverage of the shape at p (shape space).
@@ -690,6 +700,28 @@ float scissorMask(vec2 p) {
 	sc = vec2(0.5,0.5) - sc * scissorScale;
 	return clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);
 }
+#ifdef EDGE_AA
+// Stroke inner shadow: one minus the coverage of the stroke band moved by strokeShadow.xy and blurred
+// by strokeShadow.z, for a band of half width strokeShadow.w (framebuffer px). ftcoord.x runs 0..1 across
+// the band, so its screen-space gradient gives the band's normal at this pixel.
+// g: screen-space gradient of ftcoord.x, taken in main() before any discard (derivatives after one
+// are undefined).
+float strokeInnerShadow(vec2 g) {
+#ifdef HAVE_DERIVATIVES
+	float a = ftcoord.x;
+	float gl = length(g);
+	if (gl < 1e-6) return 0.0;
+	float halfW = strokeShadow.w;               // half width including the antialiasing ramp
+	float edge = halfW * (1.0 - 0.5 / strokeMult);  // nominal half width (the middle of the ramp)
+	float p = (a - 0.5) * 2.0 * halfW;          // signed distance from the center line
+	float s = dot(strokeShadow.xy, g / gl); // offset across the band
+	float b = max(strokeShadow.z * 2.0, 1.0);
+	return 1.0 - clamp((edge - abs(p - s)) / b + 0.5, 0.0, 1.0);
+#else
+	return 0.0;
+#endif
+}
+#endif
 float glow(vec2 uv){
   return smoothstep(0.0, 1.0, 1.0 - 2.0 * abs(uv.x));
 }
@@ -721,6 +753,11 @@ float strokeMask() {
 void main(void) {
    vec4 result;
 	float scissor = scissorMask(fpos);
+#if defined(EDGE_AA) && defined(HAVE_DERIVATIVES)
+	vec2 strokeGrad = vec2(dFdx(ftcoord.x), -dFdy(ftcoord.x));  // GL window y runs up; NanoVG's y runs down
+#else
+	vec2 strokeGrad = vec2(0.0);
+#endif
 #ifdef EDGE_AA
 	float strokeAlpha = strokeMask();
 if(lineStyle == 2) strokeAlpha*=dashed(uv);
@@ -780,6 +817,9 @@ if (lineStyle > 1 && strokeAlpha < strokeThr) discard;
 		result = mix(innerCol,outerCol,d) * (mask * scissor);
 	}
 	if (shapeType != 0) result *= shapeCoverage((shapeMat * vec3(fpos, 1.0)).xy);
+#ifdef EDGE_AA
+	if (strokeShadow.w > 0.0) result *= strokeInnerShadow(strokeGrad);
+#endif
 #ifdef NANOVG_GL3
 	outColor = result;
 #else
@@ -1543,7 +1583,8 @@ error:
     if (gl->ncalls > 0) gl->ncalls--;
 }
 
-static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
+static void glnvg__strokeCall(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths,
+                              const float* innerShadow)
 {
     GLContext* gl = (GLContext*)uptr;
     GlCall* call = glnvg__allocCall(gl);
@@ -1589,6 +1630,16 @@ static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationStat
         if (call->uniformOffset == -1) goto error;
         glnvg__convertPaint(gl, nvg::detail::fragUniformPtr(gl, call->uniformOffset), paint, scissor, strokeWidth, fringe, -1.0f, lineStyle);
     }
+    if (innerShadow) {
+        const int nfrags = (gl->flags & CreateFlags::StencilStrokes) ? 2 : 1;
+        for (i = 0; i < nfrags; i++) {
+            GlFragUniforms* frag = nvg::detail::fragUniformPtr(gl, call->uniformOffset + i * gl->fragSize);
+            frag->strokeShadow[0] = innerShadow[0];
+            frag->strokeShadow[1] = innerShadow[1];
+            frag->strokeShadow[2] = innerShadow[2];
+            frag->strokeShadow[3] = innerShadow[3];
+        }
+    }
 
     return;
 
@@ -1596,6 +1647,17 @@ error:
     // We get here if call alloc was ok, but something else is not.
     // Roll back the last call to prevent drawing it.
     if (gl->ncalls > 0) gl->ncalls--;
+}
+
+static void glnvg__renderStroke(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, int lineStyle, const Path* paths, int npaths)
+{
+    glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, lineStyle, paths, npaths, NULL);
+}
+
+static void glnvg__renderStrokeInnerShadow(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* shadow,
+                                           const Path* paths, int npaths)
+{
+    glnvg__strokeCall(uptr, paint, compositeOperation, scissor, fringe, strokeWidth, static_cast<int>(LineStyle::Solid), paths, npaths, shadow);
 }
 
 static void glnvg__renderTriangles(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
@@ -1779,6 +1841,7 @@ std::unique_ptr<Context> createGL(int flags)
     params.renderTriangles = glnvg__renderTriangles;
     params.renderShape = glnvg__renderShape;
     params.renderMaskedPaint = glnvg__renderMaskedPaint;
+    params.renderStrokeInnerShadow = glnvg__renderStrokeInnerShadow;
     params.renderDelete = glnvg__renderDelete;
     params.userPtr = gl;
     params.edgeAntiAlias = flags & CreateFlags::Antialias ? 1 : 0;

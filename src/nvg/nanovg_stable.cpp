@@ -299,6 +299,26 @@ void nvgMarkers(NVGcontext* ctx, NVGmarker marker)
     ctx->markers(toCppMarker(ctx, marker));
 }
 
+void nvgStrokeOuterShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color)
+{
+    ctx->strokeOuterShadow(offsetX, offsetY, blur, toCpp(color));
+}
+
+void nvgStrokeInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blur, NVGcolor color)
+{
+    ctx->strokeInnerShadow(offsetX, offsetY, blur, toCpp(color));
+}
+
+void nvgStrokeOutline(NVGcontext* ctx, float width, NVGcolor color)
+{
+    ctx->strokeOutline(width, toCpp(color));
+}
+
+void nvgStrokeBlur(NVGcontext* ctx, float blur)
+{
+    ctx->strokeBlur(blur);
+}
+
 void nvgLineCap(NVGcontext* ctx, int cap)
 {
     ctx->lineCap(cap);

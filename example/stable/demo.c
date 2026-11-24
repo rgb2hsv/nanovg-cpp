@@ -1864,6 +1864,74 @@ static void demoTextFill(NVGcontext* vg, NVGrect c, float t, const DemoData* dat
     nvgRestore(vg);
 }
 
+static void strokeEffectsWave(NVGcontext* vg, float x, float y, float w)
+{
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, x, y);
+    nvgBezierTo(vg, x + w * 0.33f, y - 22, x + w * 0.66f, y + 22, x + w, y);
+}
+
+static void strokeEffectsLabel(NVGcontext* vg, float x, float y, const char* s)
+{
+    nvgFontSize(vg, 12.0f);
+    nvgFontFace(vg, "sans");
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 150));
+    nvgText(vg, x, y, s, NULL);
+}
+
+static void demoStrokeEffects(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    // Four strokes of the same wave, one effect each, with labels.
+    const float w = c.w * 0.5f - 30;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStrokeWidth(vg, 9.0f);
+
+    // Outer shadow whose light source moves around.
+    nvgSave(vg);
+    nvgStrokeOuterShadow(vg, 4.0f * cosf(t), 4.0f + 2.0f * sinf(t), 4.0f, nvgRGBA(0, 0, 0, 230));
+    nvgStrokeColor(vg, nvgRGBA(255, 200, 60, 255));
+    strokeEffectsWave(vg, c.x + 15, c.y + 62, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + 15 + w * 0.5f, c.y + 86, "outer shadow");
+
+    // Glow: an unshifted, colored outer shadow, pulsing.
+    nvgSave(vg);
+    nvgStrokeOuterShadow(vg, 0.0f, 0.0f, 6.0f + 3.0f * sinf(t * 2.0f), nvgRGBA(80, 200, 255, 255));
+    nvgStrokeColor(vg, nvgRGBA(230, 250, 255, 255));
+    nvgStrokeWidth(vg, 5.0f);
+    strokeEffectsWave(vg, c.x + c.w * 0.5f + 15, c.y + 62, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 86, "glow");
+
+    // Inner shadow on a thick stroke: the edges facing away from the offset are shaded.
+    nvgSave(vg);
+    nvgStrokeWidth(vg, 16.0f);
+    nvgStrokeInnerShadow(vg, 2.5f * cosf(t), 2.5f * sinf(t), 2.0f, nvgRGBA(90, 20, 60, 255));
+    nvgStrokeColor(vg, nvgRGBA(255, 120, 170, 255));
+    strokeEffectsWave(vg, c.x + 15, c.y + 130, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + 15 + w * 0.5f, c.y + 154, "inner shadow");
+
+    // Outline under the stroke, with a soft blur on both.
+    nvgSave(vg);
+    nvgStrokeOutline(vg, 2.5f, nvgRGBA(255, 255, 255, 255));
+    nvgStrokeBlur(vg, 0.6f + 0.6f * sinf(t * 1.5f));
+    nvgStrokeColor(vg, nvgRGBA(90, 220, 120, 255));
+    nvgStrokeWidth(vg, 7.0f);
+    strokeEffectsWave(vg, c.x + c.w * 0.5f + 15, c.y + 130, w);
+    nvgStroke(vg);
+    nvgRestore(vg);
+    strokeEffectsLabel(vg, c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 154, "outline + blur");
+    nvgRestore(vg);
+}
+
 static void demoPoints(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
 {
     float wave[2 * 16];
@@ -2024,7 +2092,7 @@ typedef void (*DrawCallsDemoFn)(NVGcontext* vg, NVGrect c, float t, const DemoDa
 
 void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float height, float t, DemoData* data)
 {
-    enum { cols = 7, rows = 3, count = 21 };
+    enum { cols = 8, rows = 3, count = 22 };
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     const float designW = 240.0f, designH = 175.0f;
     const float pad = 10.0f, top = 10.0f;
@@ -2033,11 +2101,11 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     static const char* titles[count] = {
         "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawArrow", "strokeDashArray", "markerStart / Mid / End",
         "ellipticalArcTo / Arc", "drawRoundRect(rx, ry)", "drawPoints / drawPoint", "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine",
-        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner", "textOnPath", "textFill(Paint): gradient text",
+        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner", "textOnPath", "textFill(Paint): gradient text", "strokeOuterShadow / Inner / Outline",
     };
     static const DrawCallsDemoFn draws[count] = {
         demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoArrows, demoDashes, demoMarkers, demoEllipticalArcs, demoEllipticalCorners, demoPoints, demoPolygon,
-        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow, demoTextOnPath, demoTextFill,
+        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow, demoTextOnPath, demoTextFill, demoStrokeEffects,
     };
     float s;
     int i;

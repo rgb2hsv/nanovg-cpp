@@ -1778,6 +1778,69 @@ static void demoTextFill(nvg::Context& vg, const nvg::Rect& c, float t)
     vg.restore();
 }
 
+static void demoStrokeEffects(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    // Four strokes of the same wave, one effect each, with labels.
+    auto wave = [&](float x, float y, float w) {
+        vg.beginPath();
+        vg.moveTo(x, y);
+        vg.bezierTo(x + w * 0.33f, y - 22, x + w * 0.66f, y + 22, x + w, y);
+    };
+    auto label = [&](float x, float y, const char* s) {
+        vg.fontSize(12.0f);
+        vg.fontFace("sans");
+        vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Top));
+        vg.fillColor(nvg::rgba(255, 255, 255, 150));
+        vg.text(x, y, s, nullptr);
+    };
+    const float w = c.w * 0.5f - 30;
+    vg.save();
+    vg.lineCap(static_cast<int>(nvg::LineCap::Round));
+    vg.lineJoin(static_cast<int>(nvg::LineCap::Round));
+    vg.strokeWidth(9.0f);
+
+    // Outer shadow whose light source moves around.
+    vg.save();
+    vg.strokeOuterShadow(4.0f * cosf(t), 4.0f + 2.0f * sinf(t), 4.0f, nvg::rgba(0, 0, 0, 230));
+    vg.strokeColor(nvg::rgba(255, 200, 60, 255));
+    wave(c.x + 15, c.y + 62, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + 15 + w * 0.5f, c.y + 86, "outer shadow");
+
+    // Glow: an unshifted, colored outer shadow, pulsing.
+    vg.save();
+    vg.strokeOuterShadow(0.0f, 0.0f, 6.0f + 3.0f * sinf(t * 2.0f), nvg::rgba(80, 200, 255, 255));
+    vg.strokeColor(nvg::rgba(230, 250, 255, 255));
+    vg.strokeWidth(5.0f);
+    wave(c.x + c.w * 0.5f + 15, c.y + 62, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 86, "glow");
+
+    // Inner shadow on a thick stroke: the edges facing away from the offset are shaded.
+    vg.save();
+    vg.strokeWidth(16.0f);
+    vg.strokeInnerShadow(2.5f * cosf(t), 2.5f * sinf(t), 2.0f, nvg::rgba(90, 20, 60, 255));
+    vg.strokeColor(nvg::rgba(255, 120, 170, 255));
+    wave(c.x + 15, c.y + 130, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + 15 + w * 0.5f, c.y + 154, "inner shadow");
+
+    // Outline under the stroke, with a soft blur on both.
+    vg.save();
+    vg.strokeOutline(2.5f, nvg::rgba(255, 255, 255, 255));
+    vg.strokeBlur(0.6f + 0.6f * sinf(t * 1.5f));
+    vg.strokeColor(nvg::rgba(90, 220, 120, 255));
+    vg.strokeWidth(7.0f);
+    wave(c.x + c.w * 0.5f + 15, c.y + 130, w);
+    vg.stroke();
+    vg.restore();
+    label(c.x + c.w * 0.5f + 15 + w * 0.5f, c.y + 154, "outline + blur");
+    vg.restore();
+}
+
 static void demoPoints(nvg::Context& vg, const nvg::Rect& c, float t)
 {
     std::array<float, 2 * 16> wave{};
@@ -1928,7 +1991,7 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
     vg.strokeWidth(1.0f);
     vg.drawLine(x, y + 0.5f, x + width, y + 0.5f);
 
-    constexpr int cols = 7, rows = 3;
+    constexpr int cols = 8, rows = 3;
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     constexpr float designW = 240.0f, designH = 175.0f;
     const float pad = 10.0f, top = 10.0f;
@@ -1963,6 +2026,7 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
         {"textOuterShadow / Inner", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOuterShadow(v, c, tt); }},
         {"textOnPath", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOnPath(v, c, tt); }},
         {"textFill(Paint): gradient text", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextFill(v, c, tt); }},
+        {"strokeOuterShadow / Inner / Outline", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoStrokeEffects(v, c, tt); }},
     };
 
     static_assert(std::size(entries) <= cols * rows);

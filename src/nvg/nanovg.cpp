@@ -422,6 +422,13 @@ void Context::reset()
     state.ndashes = 0;
     state.dashOffset = 0.0f;
     state.markers = {};
+    state.strokeOuterShadowX = state.strokeOuterShadowY = state.strokeOuterShadowBlur = 0.0f;
+    state.strokeOuterShadowColor = Color{};
+    state.strokeInnerShadowX = state.strokeInnerShadowY = state.strokeInnerShadowBlur = 0.0f;
+    state.strokeInnerShadowColor = Color{};
+    state.strokeOutlineWidth = 0.0f;
+    state.strokeOutlineColor = Color{};
+    state.strokeBlur = 0.0f;
     state.alpha = 1.0f;
     transformIdentity(state.xform.data());
 
@@ -570,6 +577,48 @@ void Context::markers(const Marker& marker)
 {
     auto& m = mImpl->topState().markers;
     m[0] = m[1] = m[2] = marker;
+}
+
+namespace
+{
+float finiteOr0(float v)
+{
+    return std::isfinite(v) ? v : 0.0f;
+}
+float nonNegative(float v)
+{
+    return std::isfinite(v) ? std::max(v, 0.0f) : 0.0f;
+}
+}  // namespace
+
+void Context::strokeOuterShadow(float offsetX, float offsetY, float blur, const Color& color)
+{
+    State& state = mImpl->topState();
+    state.strokeOuterShadowX = finiteOr0(offsetX);
+    state.strokeOuterShadowY = finiteOr0(offsetY);
+    state.strokeOuterShadowBlur = nonNegative(blur);
+    state.strokeOuterShadowColor = color;
+}
+
+void Context::strokeInnerShadow(float offsetX, float offsetY, float blur, const Color& color)
+{
+    State& state = mImpl->topState();
+    state.strokeInnerShadowX = finiteOr0(offsetX);
+    state.strokeInnerShadowY = finiteOr0(offsetY);
+    state.strokeInnerShadowBlur = nonNegative(blur);
+    state.strokeInnerShadowColor = color;
+}
+
+void Context::strokeOutline(float width, const Color& color)
+{
+    State& state = mImpl->topState();
+    state.strokeOutlineWidth = nonNegative(width);
+    state.strokeOutlineColor = color;
+}
+
+void Context::strokeBlur(float blur)
+{
+    mImpl->topState().strokeBlur = nonNegative(blur);
 }
 
 void Context::lineCap(int cap)
@@ -1333,12 +1382,47 @@ void Context::stroke()
 
 void Context::strokePath(bool withMarkers)
 {
+    const State& state = mImpl->topState();
+    // Copies: the passes below may not keep references into the state stack.
+    const Paint stroke = state.stroke;
+    const float blur = state.strokeBlur;
+    if (state.strokeOuterShadowColor.a > 0.0f) {
+        Paint shadow{};
+        detail::setPaintColor(shadow, state.strokeOuterShadowColor);
+        const float outline = state.strokeOutlineColor.a > 0.0f ? state.strokeOutlineWidth : 0.0f;
+        strokePass(shadow, outline, state.strokeOuterShadowBlur, state.strokeOuterShadowX, state.strokeOuterShadowY, nullptr);
+    }
+    if (state.strokeOutlineWidth > 0.0f && state.strokeOutlineColor.a > 0.0f) {
+        Paint outline{};
+        detail::setPaintColor(outline, state.strokeOutlineColor);
+        strokePass(outline, state.strokeOutlineWidth, blur, 0.0f, 0.0f, nullptr);
+    }
+    strokePass(stroke, 0.0f, blur, 0.0f, 0.0f, nullptr);
+    const State& st = mImpl->topState();
+    if (st.strokeInnerShadowColor.a > 0.0f && mImpl->params.renderStrokeInnerShadow && mImpl->params.edgeAntiAlias && st.shapeAntiAlias) {
+        // Offset and blur in framebuffer pixels: the shader measures the band with screen derivatives.
+        const float* xf = st.xform.data();
+        const float px = mImpl->devicePxRatio;
+        const float scale = detail::getAverageScale(xf);
+        const float shadow[4] = {(xf[0] * st.strokeInnerShadowX + xf[2] * st.strokeInnerShadowY) * px, (xf[1] * st.strokeInnerShadowX + xf[3] * st.strokeInnerShadowY) * px,
+                                 st.strokeInnerShadowBlur * scale * px, 0.0f};
+        Paint inner{};
+        detail::setPaintColor(inner, st.strokeInnerShadowColor);
+        strokePass(inner, 0.0f, blur, 0.0f, 0.0f, shadow);
+    }
+    if (withMarkers) drawMarkers();
+}
+
+void Context::strokePass(const Paint& paint, float extraWidth, float blur, float dx, float dy, const float* innerShadow)
+{
     State& state = mImpl->topState();
     const float scale = detail::getAverageScale(state.xform.data());
-    float strokeWidth = detail::clampf(state.strokeWidth * scale, 0.0f, 1000.0f);
-    Paint strokePaint = state.stroke;
-    const Path* path;
-    int i;
+    float strokeWidth = detail::clampf((state.strokeWidth + extraWidth * 2.0f) * scale, 0.0f, 1000.0f);
+    Paint strokePaint = paint;
+    const bool aa = mImpl->params.edgeAntiAlias && state.shapeAntiAlias;
+    // A blurred edge is a wide antialiasing ramp: coverage falls off linearly over 2 x blur, centered
+    // on the stroke's edge.
+    const float fringe = aa ? std::max(mImpl->fringeWidth, std::min(blur * scale * 2.0f, 200.0f)) : mImpl->fringeWidth;
 
     if (strokeWidth < mImpl->fringeWidth) {
         // If the stroke width is less than pixel size, use alpha to emulate coverage.
@@ -1353,6 +1437,31 @@ void Context::strokePath(bool withMarkers)
     strokePaint.innerColor.a *= state.alpha;
     strokePaint.outerColor.a *= state.alpha;
 
+    // An offset pass (shadows) strokes a moved copy of the path; the commands are in device space,
+    // so move them by the offset run through the transform's linear part.
+    std::vector<float> savedCommands;
+    const bool moved = dx != 0.0f || dy != 0.0f;
+    if (moved) {
+        const float* xf = state.xform.data();
+        const float ddx = xf[0] * dx + xf[2] * dy, ddy = xf[1] * dx + xf[3] * dy;
+        savedCommands = mImpl->commands;
+        std::vector<float>& cmds = mImpl->commands;
+        size_t i = 0;
+        while (i < cmds.size()) {
+            const int cmd = static_cast<int>(cmds[i]);
+            const size_t npts = cmd == static_cast<int>(PathCommand::MoveTo) || cmd == static_cast<int>(PathCommand::LineTo)                 ? 1
+                                : cmd == static_cast<int>(PathCommand::BezierTo) || cmd == static_cast<int>(PathCommand::BezierContinue) ? 3
+                                                                                                                                         : 0;
+            if (i + 1 + npts * 2 > cmds.size()) break;
+            for (size_t k = 0; k < npts; k++) {
+                cmds[i + 1 + k * 2] += ddx;
+                cmds[i + 2 + k * 2] += ddy;
+            }
+            i += cmd == static_cast<int>(PathCommand::Winding) ? 2 : 1 + npts * 2;
+        }
+        mImpl->clearPathCache();
+    }
+
     mImpl->flattenPaths();
 
     // Dashing replaces the flattened outline in the cache with one open path per dash. Dash lengths
@@ -1364,24 +1473,35 @@ void Context::strokePath(bool withMarkers)
         mImpl->dashPaths(deviceDashes.data(), state.ndashes, state.dashOffset * scale, state.lineCap);
     }
 
-    if (mImpl->params.edgeAntiAlias && state.shapeAntiAlias)
-        mImpl->expandStroke(strokeWidth * 0.5f, mImpl->fringeWidth, state.lineCap, state.lineJoin, state.lineStyle, state.miterLimit);
+    // The inner shadow measures the band from its across coordinate, so it uses plain (solid) geometry.
+    const int lineStyle = innerShadow ? static_cast<int>(LineStyle::Solid) : state.lineStyle;
+    if (aa)
+        mImpl->expandStroke(strokeWidth * 0.5f, fringe, state.lineCap, state.lineJoin, lineStyle, state.miterLimit);
     else
-        mImpl->expandStroke(strokeWidth * 0.5f, 0.0f, state.lineCap, state.lineJoin, state.lineStyle, state.miterLimit);
+        mImpl->expandStroke(strokeWidth * 0.5f, 0.0f, state.lineCap, state.lineJoin, lineStyle, state.miterLimit);
 
-    mImpl->params.renderStroke(mImpl->params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, mImpl->fringeWidth, strokeWidth, state.lineStyle, mImpl->cache->paths.data(),
-                               static_cast<int>(mImpl->cache->paths.size()));
+    if (innerShadow) {
+        const float shadow[4] = {innerShadow[0], innerShadow[1], innerShadow[2], (strokeWidth * 0.5f + fringe * 0.5f) * mImpl->devicePxRatio};
+        mImpl->params.renderStrokeInnerShadow(mImpl->params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, fringe, strokeWidth, shadow, mImpl->cache->paths.data(),
+                                              static_cast<int>(mImpl->cache->paths.size()));
+    }
+    else
+        mImpl->params.renderStroke(mImpl->params.userPtr, &strokePaint, state.compositeOperation, &state.scissor, fringe, strokeWidth, lineStyle, mImpl->cache->paths.data(),
+                                   static_cast<int>(mImpl->cache->paths.size()));
 
     // Count triangles
-    for (i = 0; i < static_cast<int>(mImpl->cache->paths.size()); i++) {
-        path = &mImpl->cache->paths[i];
-        mImpl->strokeTriCount += path->nstroke - 2;
+    for (const Path& path : mImpl->cache->paths) {
+        mImpl->strokeTriCount += path.nstroke - 2;
         mImpl->drawCallCount++;
     }
-    // The cache now holds dashes rather than the path's outline; make a later fill() or stroke() of
-    // the same path flatten it again.
-    if (dashed) mImpl->clearPathCache();
-    if (withMarkers) drawMarkers();
+    // The cache now holds dashes (or a moved copy) rather than the path's outline; make a later fill()
+    // or stroke() of the same path flatten it again.
+    if (moved) {
+        mImpl->commands = std::move(savedCommands);
+        mImpl->clearPathCache();
+    } else if (dashed) {
+        mImpl->clearPathCache();
+    }
 }
 
 namespace
@@ -1542,6 +1662,9 @@ void Context::drawMarkers()
         st.markers = {};
         st.ndashes = 0;
         st.lineStyle = static_cast<int>(LineStyle::Solid);
+        // The stroke's effects (shadows, outline, blur) are not applied to its markers.
+        st.strokeOuterShadowColor = st.strokeInnerShadowColor = st.strokeOutlineColor = Color{};
+        st.strokeBlur = 0.0f;
         // Both paints are already in device space, so the marker frame does not move them.
         st.fill = st.stroke;
     }

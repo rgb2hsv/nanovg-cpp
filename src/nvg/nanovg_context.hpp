@@ -85,6 +85,13 @@ struct State {
     int ndashes = 0;                                   // 0 = solid
     float dashOffset = 0.0f;
     std::array<Marker, 3> markers{};  // start, mid, end
+    float strokeOuterShadowX = 0.0f, strokeOuterShadowY = 0.0f, strokeOuterShadowBlur = 0.0f;
+    Color strokeOuterShadowColor{};  // alpha 0 = no shadow
+    float strokeInnerShadowX = 0.0f, strokeInnerShadowY = 0.0f, strokeInnerShadowBlur = 0.0f;
+    Color strokeInnerShadowColor{};  // alpha 0 = no shadow
+    float strokeOutlineWidth = 0.0f;
+    Color strokeOutlineColor{};
+    float strokeBlur = 0.0f;
     float alpha;
     std::array<float, 6> xform;
     Scissor scissor;

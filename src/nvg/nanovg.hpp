@@ -366,6 +366,13 @@ struct Params {
     // sampled at the vertices' u, v. Used for gradient-filled text (TextFill::Paint); without it such text
     // falls back to the paint's inner color.
     void (*renderMaskedPaint)(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe);
+    // Optional (may be null): draws paths' stroke geometry like renderStroke (solid line style), with
+    // the paint scaled per pixel by an inner-shadow factor: one minus the coverage of the stroke band
+    // moved by (shadow[0], shadow[1]) and blurred by shadow[2], where shadow[3] is the band's half width
+    // including the antialiasing ramp (strokeWidth / 2 + fringe / 2), all in framebuffer pixels, so the
+    // band's edges facing away from the offset are shaded. Context::strokeInnerShadow is skipped without it.
+    void (*renderStrokeInnerShadow)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, float strokeWidth, const float* shadow, const Path* paths,
+                                    int npaths);
 };
 
 #ifdef _MSC_VER
@@ -428,6 +435,22 @@ public:
     void markerEnd(const Marker& marker);
     // Sets all three, like the SVG marker shorthand.
     void markers(const Marker& marker);
+    // Stroke effects matching the text ones, applied by every stroke() (and the Skia-style calls that
+    // stroke) in local units, so they follow the transform. All are saved and restored with the state.
+    // Soft shadow under the stroke, like textOuterShadow: the stroke again in color, offset by
+    // (offsetX, offsetY) and blurred by blur. No offset and a bright color make a glow. Zero alpha = off.
+    void strokeOuterShadow(float offsetX, float offsetY, float blur, const Color& color);
+    // Inner shadow over the stroke, like textInnerShadow: color inside the stroke wherever a copy of it,
+    // offset by (offsetX, offsetY) and blurred by blur, does not cover it, so an offset down-right shades
+    // the band's top-left edges. Needs Params::renderStrokeInnerShadow (the bundled GL and Vulkan
+    // backends; GLES2 also needs GL_OES_standard_derivatives). Zero alpha = off.
+    void strokeInnerShadow(float offsetX, float offsetY, float blur, const Color& color);
+    // An outline of the given width around the stroke, drawn under it in color (the stroke grown by
+    // width on each side), like an outlined text style. Zero width or alpha = off.
+    void strokeOutline(float width, const Color& color);
+    // Blurs the stroke's own edges (and its outline) by blur, like fontBlur. 0 = sharp (the default).
+    // Blur and shadows need an antialiased context (CreateFlags::Antialias); without it they are sharp.
+    void strokeBlur(float blur);
     void lineCap(int cap);
     void lineJoin(int join);
     void globalAlpha(float alpha);
@@ -545,6 +568,10 @@ private:
     // path); otherwise the arc must start at the current point.
     void appendEllipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float da, bool connect);
     void strokePath(bool withMarkers);
+    // One stroke pass of the current path: paint, the stroke widened by extraWidth on each side, edges
+    // blurred by blur, offset by (dx, dy) (local units); with innerShadow (device px: offset x, y, blur)
+    // it goes through Params::renderStrokeInnerShadow (the pass fills in the band's half width).
+    void strokePass(const Paint& paint, float extraWidth, float blur, float dx, float dy, const float* innerShadow);
     void textInnerShadowPass(float x, float y, const char* string, const char* end);
     float textOnPathPass(const TextPathGeometry& path, const char* string, const char* end, const TextPathOptions& options, float shiftX, float shiftY);
     void drawMarkers();

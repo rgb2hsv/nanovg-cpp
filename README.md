@@ -209,6 +209,19 @@ vg.text(x, y, "Gradient", nullptr);
 
 The option is saved with the state. Backends draw it through the optional `Params::renderMaskedPaint` hook (the GL, stable GL and Vulkan backends implement it), which evaluates the gradient per pixel and multiplies it by the glyph coverage from the font atlas; without the hook, or with an image-pattern paint, text keeps its inner color. C: `nvgTextFill(vg, NVG_TEXT_FILL_PAINT)`.
 
+Strokes get the same effects as text. `strokeOuterShadow` draws a soft, offset copy of the stroke under it (with no offset and a bright color it is a glow), `strokeInnerShadow` shades the inside of the stroke along the edges facing away from the offset, `strokeOutline` draws a band of the given width around the stroke underneath it, and `strokeBlur` softens the stroke's own edges, like `fontBlur`:
+
+```cpp
+vg.strokeOuterShadow(/*offsetX*/ 3, /*offsetY*/ 4, /*blur*/ 4, nvg::rgba(0, 0, 0, 200));
+vg.strokeOuterShadow(0, 0, 6, nvg::rgba(80, 200, 255, 255));    // glow
+vg.strokeInnerShadow(/*offsetX*/ 2, /*offsetY*/ 2, /*blur*/ 2, nvg::rgba(90, 20, 60, 255));
+vg.strokeOutline(/*width*/ 2.5f, nvg::rgba(255, 255, 255, 255));
+vg.strokeBlur(1.0f);
+vg.stroke();                                                    // or drawLine, drawRect(..., Stroke), ...
+```
+
+All of them are in local units, follow the transform, are saved with the state and apply to every `stroke()` (including dashed strokes and the Skia-style calls that stroke), but not to markers or to the shader-drawn `drawArrow` / `drawGrid`. Zero alpha (or width) turns each one off. Shadows, outlines and blur are extra stroke passes: a blurred edge is a wide antialiasing ramp, so they work on every backend but need an antialiased context. The inner shadow is computed per pixel from the stroke's across coordinate and its screen-space derivative, through the optional `Params::renderStrokeInnerShadow` hook (GL, stable GL and Vulkan implement it; GLES2 needs `GL_OES_standard_derivatives`). C: `nvgStrokeOuterShadow`, `nvgStrokeInnerShadow`, `nvgStrokeOutline`, `nvgStrokeBlur`.
+
 ### Skia-style draw calls (C++ only)
 
 `nvg::Context` also offers one-call draw methods modeled after `SkCanvas`. Each builds its own path and renders it with the current state, using an optional `nvg::PaintStyle` (`Fill`, `Stroke`, `FillAndStroke`). Because they replace the current path, don't call them in the middle of a `beginPath()` … `fill()` sequence.

@@ -25,6 +25,7 @@ struct FragUniforms {
     mat3 shapeMat;  // device -> shape space
     vec4 shapeRect;
     vec4 shapeGrid;
+    vec4 strokeShadow;  // stroke inner shadow: offset x, y, blur, band half width (framebuffer px); w = 0: off
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer FragBuffer {
@@ -146,9 +147,28 @@ float strokeMask(FragUniforms f)
     return min(1.0, (1.0 - abs(ftcoord.x * 2.0 - 1.0)) * f.strokeMult) * min(1.0, ftcoord.y);
 }
 
+// Stroke inner shadow: one minus the coverage of the stroke band moved by strokeShadow.xy and blurred by
+// strokeShadow.z, for a band of half width strokeShadow.w (framebuffer px). ftcoord.x runs 0..1 across the
+// band, so its screen-space gradient gives the band's normal at this pixel.
+// g: screen-space gradient of ftcoord.x, taken in main() before any discard (derivatives after one are
+// undefined).
+float strokeInnerShadow(FragUniforms f, vec2 g)
+{
+    float a = ftcoord.x;
+    float gl = length(g);
+    if (gl < 1e-6) return 0.0;
+    float halfW = f.strokeShadow.w;                   // half width including the antialiasing ramp
+    float edge = halfW * (1.0 - 0.5 / f.strokeMult);  // nominal half width (the middle of the ramp)
+    float p = (a - 0.5) * 2.0 * halfW;                // signed distance from the center line
+    float s = dot(f.strokeShadow.xy, g / gl);         // offset across the band
+    float b = max(f.strokeShadow.z * 2.0, 1.0);
+    return 1.0 - clamp((edge - abs(p - s)) / b + 0.5, 0.0, 1.0);
+}
+
 void main(void)
 {
     FragUniforms f = frags[pc.uniformIndex];
+    vec2 strokeGrad = vec2(dFdx(ftcoord.x), dFdy(ftcoord.x));  // before any discard
     vec4 result = vec4(0.0);
     float scissor = scissorMask(f, fpos);
 
@@ -197,5 +217,6 @@ void main(void)
         shapeGrid = f.shapeGrid;
         result *= shapeCoverage((f.shapeMat * vec3(fpos, 1.0)).xy);
     }
+    if (EDGE_AA != 0 && f.strokeShadow.w > 0.0) result *= strokeInnerShadow(f, strokeGrad);
     outColor = result;
 }
