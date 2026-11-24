@@ -2508,6 +2508,326 @@ void Context::textBox(float x, float y, float breakRowWidth, const char* string,
     state.textAlign = oldAlign;
 }
 
+// Text along a path (SVG <textPath>)
+
+// The current path flattened into local-space segments laid end to end, with the distance along the
+// path at the start of each. Tangents are blended across smooth joints (the flattened curves), so glyphs
+// turn gradually along curves but keep the segment direction on straight edges up to a corner.
+struct TextPathGeometry {
+    struct Seg {
+        float x, y;      // start point
+        float dx, dy;    // unit direction
+        float len, s;    // length, distance along the path at the start
+        float t0x, t0y;  // unit tangents at the start and end (equal to the direction unless smooth)
+        float t1x, t1y;
+    };
+    std::vector<Seg> segs;
+    float length = 0.0f;
+    bool wrap = false;  // one closed subpath: positions wrap around
+
+    // Point and unit tangent at distance s; extrapolates along the end segments. False when s is off
+    // the path (and the path does not wrap).
+    bool at(float s, float& x, float& y, float& tx, float& ty) const
+    {
+        bool on = true;
+        if (wrap && length > 0.0f) {
+            s = std::fmod(s, length);
+            if (s < 0.0f) s += length;
+        } else if (s < 0.0f || s > length) {
+            on = false;
+        }
+        auto it = std::upper_bound(segs.begin(), segs.end(), s, [](float v, const Seg& g) { return v < g.s; });
+        const Seg& g = it == segs.begin() ? segs.front() : *(it - 1);
+        const float d = s - g.s;
+        x = g.x + g.dx * d;
+        y = g.y + g.dy * d;
+        const float u = detail::clampf(d / g.len, 0.0f, 1.0f);
+        tx = g.t0x + (g.t1x - g.t0x) * u;
+        ty = g.t0y + (g.t1y - g.t0y) * u;
+        const float tl = sqrtf(tx * tx + ty * ty);
+        if (tl > 1e-6f) {
+            tx /= tl;
+            ty /= tl;
+        } else {
+            tx = g.dx;
+            ty = g.dy;
+        }
+        return on;
+    }
+};
+
+namespace
+{
+struct TextPathPoint {
+    float x, y;
+};
+struct TextPathPolyline {
+    std::vector<TextPathPoint> pts;
+    bool closed = false;
+};
+
+void flattenTextPathBezier(std::vector<TextPathPoint>& out, float tol, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4, int level)
+{
+    if (level > 10) return;
+    const float dx = x4 - x1, dy = y4 - y1;
+    const float d2 = std::fabs((x2 - x4) * dy - (y2 - y4) * dx);
+    const float d3 = std::fabs((x3 - x4) * dy - (y3 - y4) * dx);
+    if ((d2 + d3) * (d2 + d3) < tol * (dx * dx + dy * dy)) {
+        out.push_back({x4, y4});
+        return;
+    }
+    const float x12 = (x1 + x2) * 0.5f, y12 = (y1 + y2) * 0.5f;
+    const float x23 = (x2 + x3) * 0.5f, y23 = (y2 + y3) * 0.5f;
+    const float x34 = (x3 + x4) * 0.5f, y34 = (y3 + y4) * 0.5f;
+    const float x123 = (x12 + x23) * 0.5f, y123 = (y12 + y23) * 0.5f;
+    const float x234 = (x23 + x34) * 0.5f, y234 = (y23 + y34) * 0.5f;
+    const float x1234 = (x123 + x234) * 0.5f, y1234 = (y123 + y234) * 0.5f;
+    flattenTextPathBezier(out, tol, x1, y1, x12, y12, x123, y123, x1234, y1234, level + 1);
+    flattenTextPathBezier(out, tol, x1234, y1234, x234, y234, x34, y34, x4, y4, level + 1);
+}
+
+// Flattens a (device-space) command list into polylines in the local space given by invXform. Unlike
+// ContextImpl::flattenPaths it keeps every subpath's direction (no winding is enforced).
+std::vector<TextPathPolyline> flattenTextPath(const std::vector<float>& cmds, const float* invXform, float tessTol)
+{
+    std::vector<TextPathPolyline> subs;
+    float curx = 0.0f, cury = 0.0f;
+    auto current = [&]() -> std::vector<TextPathPoint>& {
+        if (subs.empty() || subs.back().closed) {
+            // Drawing on after closePath (or with no moveTo) starts a new subpath at the current point.
+            subs.emplace_back();
+            subs.back().pts.push_back({curx, cury});
+        }
+        return subs.back().pts;
+    };
+    size_t i = 0;
+    while (i < cmds.size()) {
+        const int cmd = static_cast<int>(cmds[i]);
+        switch (cmd) {
+            case static_cast<int>(PathCommand::MoveTo):
+                if (i + 3 > cmds.size()) i = cmds.size();
+                else {
+                    curx = cmds[i + 1];
+                    cury = cmds[i + 2];
+                    subs.emplace_back();
+                    subs.back().pts.push_back({curx, cury});
+                    i += 3;
+                }
+                break;
+            case static_cast<int>(PathCommand::LineTo):
+                if (i + 3 > cmds.size()) i = cmds.size();
+                else {
+                    current().push_back({cmds[i + 1], cmds[i + 2]});
+                    curx = cmds[i + 1];
+                    cury = cmds[i + 2];
+                    i += 3;
+                }
+                break;
+            case static_cast<int>(PathCommand::BezierTo):
+            case static_cast<int>(PathCommand::BezierContinue):
+                if (i + 7 > cmds.size()) i = cmds.size();
+                else {
+                    std::vector<TextPathPoint>& pts = current();
+                    flattenTextPathBezier(pts, tessTol, curx, cury, cmds[i + 1], cmds[i + 2], cmds[i + 3], cmds[i + 4], cmds[i + 5], cmds[i + 6], 0);
+                    curx = cmds[i + 5];
+                    cury = cmds[i + 6];
+                    i += 7;
+                }
+                break;
+            case static_cast<int>(PathCommand::Close):
+                if (!subs.empty() && !subs.back().closed) {
+                    TextPathPolyline& sp = subs.back();
+                    sp.closed = true;
+                    sp.pts.push_back(sp.pts.front());  // the closing segment
+                    curx = sp.pts.front().x;
+                    cury = sp.pts.front().y;
+                }
+                i++;
+                break;
+            case static_cast<int>(PathCommand::Winding):
+                i += 2;
+                break;
+            default:
+                i++;
+        }
+    }
+    for (TextPathPolyline& sp : subs)
+        for (TextPathPoint& p : sp.pts) transformPoint(p.x, p.y, invXform, p.x, p.y);
+    return subs;
+}
+
+TextPathGeometry buildTextPathGeometry(std::vector<TextPathPolyline> subs, bool reverse)
+{
+    TextPathGeometry geo;
+    if (reverse) {
+        std::reverse(subs.begin(), subs.end());
+        for (TextPathPolyline& sp : subs) std::reverse(sp.pts.begin(), sp.pts.end());
+    }
+    // Joints bending less than this are treated as smooth (curve flattening), sharper ones as corners.
+    const float smoothCos = 0.96f;  // about 16 degrees
+    int nonEmpty = 0;
+    bool lastClosed = false;
+    for (const TextPathPolyline& sp : subs) {
+        const size_t first = geo.segs.size();
+        for (size_t k = 0; k + 1 < sp.pts.size(); k++) {
+            float dx = sp.pts[k + 1].x - sp.pts[k].x, dy = sp.pts[k + 1].y - sp.pts[k].y;
+            const float len = sqrtf(dx * dx + dy * dy);
+            if (!(len > 1e-5f)) continue;
+            dx /= len;
+            dy /= len;
+            geo.segs.push_back({sp.pts[k].x, sp.pts[k].y, dx, dy, len, geo.length, dx, dy, dx, dy});
+            geo.length += len;
+        }
+        const size_t n = geo.segs.size() - first;
+        if (n == 0) continue;
+        nonEmpty++;
+        lastClosed = sp.closed;
+        // Blend tangents across smooth joints (including the closing joint of a closed subpath).
+        auto blend = [&](TextPathGeometry::Seg& a, TextPathGeometry::Seg& b) {
+            if (a.dx * b.dx + a.dy * b.dy < smoothCos) return;
+            float tx = a.dx + b.dx, ty = a.dy + b.dy;
+            const float tl = sqrtf(tx * tx + ty * ty);
+            if (!(tl > 1e-6f)) return;
+            tx /= tl;
+            ty /= tl;
+            a.t1x = b.t0x = tx;
+            a.t1y = b.t0y = ty;
+        };
+        for (size_t k = first; k + 1 < geo.segs.size(); k++) blend(geo.segs[k], geo.segs[k + 1]);
+        if (sp.closed && n > 1) blend(geo.segs.back(), geo.segs[first]);
+    }
+    geo.wrap = nonEmpty == 1 && lastClosed;
+    return geo;
+}
+}  // namespace
+
+float Context::textOnPath(const char* string, const char* end, const TextPathOptions& options)
+{
+    if (string == nullptr) return 0.0f;
+    if (end == nullptr) end = string + strlen(string);
+    State& state = mImpl->topState();
+    if (state.fontId == FONS_INVALID) return 0.0f;
+
+    // The path's commands are stored in device space; lay the text out in the current local space.
+    std::array<float, 6> inv{};
+    if (!transformInverse(inv.data(), state.xform.data())) return 0.0f;
+    const TextPathGeometry geo = buildTextPathGeometry(flattenTextPath(mImpl->commands, inv.data(), mImpl->tessTol), options.side == TextPathSide::Right);
+    if (geo.segs.empty()) return 0.0f;
+
+    if (state.textOuterShadowColor.a > 0.0f) {
+        save();
+        State& shadow = mImpl->topState();
+        detail::setPaintColor(shadow.fill, shadow.textOuterShadowColor);
+        shadow.fontBlur += shadow.textOuterShadowBlur;
+        textOnPathPass(geo, string, end, options, shadow.textOuterShadowX, shadow.textOuterShadowY);
+        restore();
+    }
+    return textOnPathPass(geo, string, end, options, 0.0f, 0.0f);
+}
+
+float Context::textOnPathPass(const TextPathGeometry& geo, const char* string, const char* end, const TextPathOptions& options, float shiftX, float shiftY)
+{
+    State& state = mImpl->topState();
+    FONScontext* fs = mImpl->fs.get();
+    std::vector<Vertex>& buf = mImpl->cache->verts;
+    const float scale = detail::getFontScale(&state) * mImpl->devicePxRatio;
+    const float invscale = 1.0f / scale;
+    const bool isFlipped = detail::isTransformFlipped(state.xform.data()) != 0;
+    const bool stretch = options.method == TextPathMethod::Stretch;
+    const float start = options.startOffsetPercent ? options.startOffset * 0.01f * geo.length : options.startOffset;
+    const float shift = options.baselineShift;
+    constexpr int maxSlices = 24;
+
+    fonsSetSize(fs, state.fontSize * scale);
+    fonsSetSpacing(fs, state.letterSpacing * scale);
+    fonsSetBlur(fs, state.fontBlur * scale);
+    fonsSetDilate(fs, state.fontDilate * scale);
+    fonsSetAlign(fs, state.textAlign);  // horizontal align = text-anchor, vertical = baseline placement
+    fonsSetFont(fs, state.fontId);
+
+    mImpl->prepareTempVerts(detail::maxi(2, (int)(end - string)) * 6 * (stretch ? maxSlices : 1));
+
+    auto emit = [&](float lx, float ly, float s, float t) {
+        float vx, vy;
+        transformPoint(vx, vy, state.xform.data(), lx + shiftX, ly + shiftY);
+        detail::pushVertex(buf, vx, vy, s, t, 0, 0);
+    };
+    // Two triangles for a quad given as top-left, top-right, bottom-right, bottom-left (as text() does).
+    auto quad = [&](const float* c, float s0, float t0, float s1, float t1) {
+        if (buf.size() + 6 > buf.capacity()) return;
+        emit(c[0], c[1], s0, t0);
+        emit(c[4], c[5], s1, t1);
+        emit(c[2], c[3], s1, t0);
+        emit(c[0], c[1], s0, t0);
+        emit(c[6], c[7], s0, t1);
+        emit(c[4], c[5], s1, t1);
+    };
+
+    FONStextIter iter, prevIter;
+    FONSquad q;
+    fonsTextIterInit(fs, &iter, 0, 0, string, end, FONS_GLYPH_BITMAP_REQUIRED);
+    prevIter = iter;
+    while (fonsTextIterNext(fs, &iter, &q)) {
+        if (iter.prevGlyphIndex == -1) {  // atlas full: draw what we have, make room and retry
+            if (!buf.empty()) {
+                mImpl->renderText(buf.data(), static_cast<int>(buf.size()));
+                buf.clear();
+            }
+            if (!mImpl->allocTextAtlas()) break;
+            iter = prevIter;
+            fonsTextIterNext(fs, &iter, &q);
+            if (iter.prevGlyphIndex == -1) break;
+        }
+        prevIter = iter;
+        if (!(q.x1 > q.x0)) continue;
+        if (isFlipped) {
+            std::swap(q.y0, q.y1);
+            std::swap(q.t0, q.t1);
+        }
+        // The glyph is positioned by the midpoint of its advance, as SVG does.
+        const float mid = (iter.x + iter.nextx) * 0.5f * invscale;
+        float px, py, tx, ty;
+        if (!geo.at(start + mid, px, py, tx, ty)) continue;
+        const float gx0 = q.x0 * invscale, gx1 = q.x1 * invscale;
+        const float gy0 = q.y0 * invscale + shift, gy1 = q.y1 * invscale + shift;
+        if (!stretch) {
+            // Rigid glyph in the frame (tangent, normal) at the midpoint; the normal (-ty, tx) is the
+            // glyph's +y, so the text sits upright on the left of the path's direction.
+            auto map = [&](float gx, float gy, float* o) {
+                const float u = gx - mid;
+                o[0] = px + tx * u - ty * gy;
+                o[1] = py + ty * u + tx * gy;
+            };
+            std::array<float, 8> c{};
+            map(gx0, gy0, &c[0]);
+            map(gx1, gy0, &c[2]);
+            map(gx1, gy1, &c[4]);
+            map(gx0, gy1, &c[6]);
+            quad(c.data(), q.s0, q.t0, q.s1, q.t1);
+        } else {
+            // Slices across the glyph, each edge placed and oriented by the path at its own distance.
+            const int n = detail::clampi(static_cast<int>(ceilf((q.x1 - q.x0) / 3.0f)), 1, maxSlices);
+            std::array<float, 4> prev{};
+            for (int k = 0; k <= n; k++) {
+                const float u = static_cast<float>(k) / n;
+                float ex, ey, etx, ety;
+                geo.at(start + gx0 + (gx1 - gx0) * u, ex, ey, etx, ety);
+                const std::array<float, 4> edge = {ex - ety * gy0, ey + etx * gy0, ex - ety * gy1, ey + etx * gy1};
+                if (k > 0) {
+                    const std::array<float, 8> c = {prev[0], prev[1], edge[0], edge[1], edge[2], edge[3], prev[2], prev[3]};
+                    const float sa = q.s0 + (q.s1 - q.s0) * (static_cast<float>(k - 1) / n), sb = q.s0 + (q.s1 - q.s0) * u;
+                    quad(c.data(), sa, q.t0, sb, q.t1);
+                }
+                prev = edge;
+            }
+        }
+    }
+
+    mImpl->flushTextTexture();
+    mImpl->renderText(buf.data(), static_cast<int>(buf.size()));
+    return start + iter.nextx * invscale;
+}
+
 int Context::textGlyphPositions(float x, float y, const char* string, const char* end, GlyphPosition* positions, int maxPositions)
 {
     UNUSED(y);

@@ -172,6 +172,29 @@ vg.textOuterShadow(0, 0, 0, nvg::rgba(0, 0, 0, 0));         // off (zero alpha)
 
 The outer shadow reuses the font atlas blur, so it is capped at 20 device pixels, and each distinct blur value caches its own glyphs (avoid animating it continuously). The inner shadow is built per `text()` call on the CPU: it rasterizes the string's coverage from the atlas, blurs it (the same filter, with fractional radii up to 64 device pixels, so it can be animated), shifts it by the whole-string offset, and draws the result as one textured quad. It works on every backend, and its cost grows with the text's pixel area. C: `nvgTextOuterShadow`, `nvgTextInnerShadow`.
 
+Text can follow any path, like SVG `<textPath>`. Build a path as usual and call `textOnPath` instead of `fill()` or `stroke()`: each glyph is placed at its advance midpoint's distance along the path and rotated to the path's direction there, so the text turns as the curve turns. The path isn't drawn and stays current, so you can still stroke it afterwards:
+
+```cpp
+vg.beginPath();
+vg.moveTo(20, 120);
+vg.bezierTo(100, 40, 200, 200, 280, 120);
+vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Baseline));
+nvg::TextPathOptions opts;
+opts.startOffset = 50;                           // SVG startOffset="50%"
+opts.startOffsetPercent = true;
+vg.textOnPath("Text that follows the curve", nullptr, opts);
+vg.stroke();                                     // optional: show the path too
+
+vg.beginPath();
+vg.circle(cx, cy, r);
+opts = {};
+opts.method = nvg::TextPathMethod::Stretch;      // bend each glyph along the curve
+opts.side = nvg::TextPathSide::Right;            // run the other way, on the other side
+vg.textOnPath("round and round ", nullptr, opts);
+```
+
+The attributes mirror SVG: the horizontal part of `textAlign` is `text-anchor` around `startOffset` (left = start, center = middle, right = end) and the vertical part places the glyphs on the path (`Baseline` sits them on it, `Middle` centers them). `startOffset` is in local units, or a percentage with `startOffsetPercent`; `baselineShift` moves the glyphs off the path along its normal. `TextPathMethod::Align` (the default) keeps glyphs rigid, while `Stretch` cuts each glyph into slices that bend with the path. `TextPathSide::Right` follows the path in reverse. Glyphs whose midpoint falls off either end of the path are dropped, as in SVG, except on a path made of a single closed subpath (a circle, a rounded rect), where positions wrap around so the start offset can be animated freely. Subpaths are followed one after the other. Font, size, letter spacing, blur, the fill paint and `textOuterShadow` apply as for `text()`; `textInnerShadow` does not. It returns the distance along the path just past the last glyph. C: `nvgTextOnPath(vg, string, end, startOffset, baselineShift, flags)` with `NVG_TEXTPATH_PERCENT`, `NVG_TEXTPATH_RIGHT` and `NVG_TEXTPATH_STRETCH`.
+
 ### Skia-style draw calls (C++ only)
 
 `nvg::Context` also offers one-call draw methods modeled after `SkCanvas`. Each builds its own path and renders it with the current state, using an optional `nvg::PaintStyle` (`Fill`, `Stroke`, `FillAndStroke`). Because they replace the current path, don't call them in the middle of a `beginPath()` … `fill()` sequence.

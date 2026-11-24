@@ -1646,6 +1646,42 @@ static void demoTextOuterShadow(nvg::Context& vg, const nvg::Rect& c, float t)
     vg.restore();
 }
 
+static void demoTextOnPath(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    vg.fontFace("sans-bold");
+    vg.strokeColor(nvg::rgba(255, 255, 255, 50));
+    vg.strokeWidth(1.0f);
+    // A wave whose bends change over time: the glyphs turn to follow it (method="align").
+    const float a = 22.0f * sinf(t * 1.3f);
+    vg.beginPath();
+    vg.moveTo(c.x + 8, c.y + 72);
+    vg.bezierTo(c.x + c.w * 0.3f, c.y + 72 - a * 2.0f, c.x + c.w * 0.7f, c.y + 72 + a * 2.0f, c.x + c.w - 8, c.y + 72);
+    vg.stroke();
+    vg.fontSize(19.0f);
+    vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Baseline));
+    vg.fillColor(nvg::rgba(255, 200, 60, 255));
+    nvg::TextPathOptions wave;
+    wave.startOffset = 50.0f;
+    wave.startOffsetPercent = true;
+    vg.textOnPath("Text that follows the curve", nullptr, wave);
+    // A circle with text running around it, bent glyph by glyph (method="stretch"); the start offset
+    // moves and wraps since the path is one closed subpath.
+    const float cx = c.x + c.w * 0.5f, cy = c.y + 132, r = 34.0f;
+    vg.beginPath();
+    vg.circle(cx, cy, r);
+    vg.stroke();
+    vg.fontSize(15.0f);
+    vg.textAlign(static_cast<int>(nvg::Align::Left | nvg::Align::Baseline));
+    vg.fillColor(nvg::rgba(80, 200, 255, 255));
+    nvg::TextPathOptions ring;
+    ring.startOffset = t * 30.0f;
+    ring.method = nvg::TextPathMethod::Stretch;
+    ring.baselineShift = -4.0f;
+    vg.textOnPath("round and round we go \xe2\x80\xa2 ", nullptr, ring);
+    vg.restore();
+}
+
 static void demoPoints(nvg::Context& vg, const nvg::Rect& c, float t)
 {
     std::array<float, 2 * 16> wave{};
@@ -1835,6 +1871,7 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
         {"clear", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoClear(v, c, tt); }},
         {"drawGrid", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoGrid(v, c, tt); }},
         {"textOuterShadow / Inner", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOuterShadow(v, c, tt); }},
+        {"textOnPath", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOnPath(v, c, tt); }},
     };
 
     static_assert(std::size(entries) <= cols * rows);

@@ -708,6 +708,17 @@ void nvgTextBox(NVGcontext* ctx, float x, float y, float breakRowWidth, const ch
     ctx->textBox(x, y, breakRowWidth, string, end);
 }
 
+float nvgTextOnPath(NVGcontext* ctx, const char* string, const char* end, float startOffset, float baselineShift, int flags)
+{
+    nvg::TextPathOptions options;
+    options.startOffset = startOffset;
+    options.startOffsetPercent = (flags & NVG_TEXTPATH_PERCENT) != 0;
+    options.side = (flags & NVG_TEXTPATH_RIGHT) ? nvg::TextPathSide::Right : nvg::TextPathSide::Left;
+    options.method = (flags & NVG_TEXTPATH_STRETCH) ? nvg::TextPathMethod::Stretch : nvg::TextPathMethod::Align;
+    options.baselineShift = baselineShift;
+    return ctx->textOnPath(string, end, options);
+}
+
 float nvgTextBounds(NVGcontext* ctx, float x, float y, const char* string, const char* end, float* bounds)
 {
     return ctx->textBounds(x, y, string, end, bounds);

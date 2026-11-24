@@ -188,6 +188,7 @@ enum class MarkerOrient : int {
 };
 
 class Context;
+struct TextPathGeometry;  // flattened path used internally by Context::textOnPath
 
 // A stroke marker, drawn at path vertices by Context::stroke (SVG marker-start / marker-mid /
 // marker-end with markerUnits="strokeWidth"). The marker frame has its origin on the vertex and +x along
@@ -201,6 +202,31 @@ struct Marker {
     // the stroke paint and the stroke width set to the stroked path's width. It may build and fill/stroke
     // any paths; the caller's path and state are restored afterwards. Markers do not nest.
     std::function<void(Context& ctx)> draw;
+};
+
+// Which side of the path text is drawn on by Context::textOnPath, like the SVG textPath side attribute.
+enum class TextPathSide : int {
+    Left = 0,   // Along the path's direction, glyphs upright on its left (the default).
+    Right = 1,  // The path is followed in reverse, so text runs the other way on the opposite side.
+};
+
+// How glyphs follow the path in Context::textOnPath, like the SVG textPath method attribute.
+enum class TextPathMethod : int {
+    Align = 0,    // Each glyph stays rigid and is rotated to the path's direction at its midpoint.
+    Stretch = 1,  // Each glyph is cut into thin slices that bend with the path, so it warps along curves.
+};
+
+// Layout of Context::textOnPath, mirroring the SVG <textPath> attributes.
+struct TextPathOptions {
+    // Distance along the path where the text's anchor point sits (SVG startOffset), in local units, or
+    // a percentage of the path's length (0..100) when startOffsetPercent is set.
+    float startOffset = 0.0f;
+    bool startOffsetPercent = false;
+    TextPathSide side = TextPathSide::Left;
+    TextPathMethod method = TextPathMethod::Align;
+    // Moves the glyphs away from the path along its normal, in local units (positive = towards the
+    // glyphs' "down", like SVG dy / a negative baseline-shift).
+    float baselineShift = 0.0f;
 };
 
 struct GlyphPosition {
@@ -508,6 +534,7 @@ private:
     void appendEllipticalArc(float cx, float cy, float rx, float ry, float rotation, float a0, float da, bool connect);
     void strokePath(bool withMarkers);
     void textInnerShadowPass(float x, float y, const char* string, const char* end);
+    float textOnPathPass(const TextPathGeometry& path, const char* string, const char* end, const TextPathOptions& options, float shiftX, float shiftY);
     void drawMarkers();
     // Draws one shader-evaluated shape pass (fill or stroke) through Params::renderShape. Returns false,
     // drawing nothing, when the backend has no renderShape or the shader cannot match the geometry path.
@@ -551,6 +578,19 @@ public:
     int getTextAlign() const;
     float text(float x, float y, const char* string, const char* end);
     void textBox(float x, float y, float breakRowWidth, const char* string, const char* end);
+    // Draws text along the current path, like SVG <textPath>: every glyph is placed at its advance
+    // midpoint's distance along the path and rotated to follow the path's direction there, so the text
+    // reorients as the curve turns. The path is used as built (beginPath, moveTo, bezierTo, arc, ...),
+    // is not drawn, and stays the current path, so it can still be filled or stroked afterwards.
+    // The text is laid out as by text() from the path's start: textAlign's horizontal part is the SVG
+    // text-anchor around startOffset (Left = start, Center = middle, Right = end) and its vertical part
+    // places the glyphs relative to the path (Baseline puts the baseline on it, Middle centers them).
+    // Font, size, letter spacing, blur, dilate, fill paint and textOuterShadow apply as for text();
+    // textInnerShadow does not. Subpaths are followed one after the other (a moveTo jumps without adding
+    // length). As in SVG, glyphs whose midpoint falls off either end of the path are not drawn, except
+    // on a path made of one closed subpath, where positions wrap around. Returns the distance along the
+    // path, in local units, just past the last glyph's advance.
+    float textOnPath(const char* string, const char* end, const TextPathOptions& options = {});
     float textBounds(float x, float y, const char* string, const char* end, float* bounds);
     void textBoxBounds(float x, float y, float breakRowWidth, const char* string, const char* end, float* bounds);
     int textGlyphPositions(float x, float y, const char* string, const char* end, GlyphPosition* positions, int maxPositions);

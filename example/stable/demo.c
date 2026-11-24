@@ -1672,6 +1672,39 @@ static void demoTextOuterShadow(NVGcontext* vg, NVGrect c, float t, const DemoDa
     nvgRestore(vg);
 }
 
+static void demoTextOnPath(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    float a, cx, cy, r;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgFontFace(vg, "sans-bold");
+    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 50));
+    nvgStrokeWidth(vg, 1.0f);
+    // A wave whose bends change over time: the glyphs turn to follow it (method="align").
+    a = 22.0f * sinf(t * 1.3f);
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, c.x + 8, c.y + 72);
+    nvgBezierTo(vg, c.x + c.w * 0.3f, c.y + 72 - a * 2.0f, c.x + c.w * 0.7f, c.y + 72 + a * 2.0f, c.x + c.w - 8, c.y + 72);
+    nvgStroke(vg);
+    nvgFontSize(vg, 19.0f);
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
+    nvgFillColor(vg, nvgRGBA(255, 200, 60, 255));
+    nvgTextOnPath(vg, "Text that follows the curve", NULL, 50.0f, 0.0f, NVG_TEXTPATH_PERCENT);
+    // A circle with text running around it, bent glyph by glyph (method="stretch"); the start offset
+    // moves and wraps since the path is one closed subpath.
+    cx = c.x + c.w * 0.5f;
+    cy = c.y + 132;
+    r = 34.0f;
+    nvgBeginPath(vg);
+    nvgCircle(vg, cx, cy, r);
+    nvgStroke(vg);
+    nvgFontSize(vg, 15.0f);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_BASELINE);
+    nvgFillColor(vg, nvgRGBA(80, 200, 255, 255));
+    nvgTextOnPath(vg, "round and round we go \xe2\x80\xa2 ", NULL, t * 30.0f, -4.0f, NVG_TEXTPATH_STRETCH);
+    nvgRestore(vg);
+}
+
 static void demoPoints(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
 {
     float wave[2 * 16];
@@ -1832,7 +1865,7 @@ typedef void (*DrawCallsDemoFn)(NVGcontext* vg, NVGrect c, float t, const DemoDa
 
 void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float height, float t, DemoData* data)
 {
-    enum { cols = 7, rows = 3, count = 19 };
+    enum { cols = 7, rows = 3, count = 20 };
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     const float designW = 240.0f, designH = 175.0f;
     const float pad = 10.0f, top = 34.0f;
@@ -1841,11 +1874,11 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     static const char* titles[count] = {
         "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawArrow", "strokeDashArray", "markerStart / Mid / End",
         "ellipticalArcTo / Arc", "drawRoundRect(rx, ry)", "drawPoints / drawPoint", "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine",
-        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner",
+        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner", "textOnPath",
     };
     static const DrawCallsDemoFn draws[count] = {
         demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoArrows, demoDashes, demoMarkers, demoEllipticalArcs, demoEllipticalCorners, demoPoints, demoPolygon,
-        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow,
+        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow, demoTextOnPath,
     };
     float s;
     int i;

@@ -810,6 +810,20 @@ float nvgText(NVGcontext* ctx, float x, float y, const char* string, const char*
 // Words longer than the max width are slit at nearest character (i.e. no hyphenation).
 void nvgTextBox(NVGcontext* ctx, float x, float y, float breakRowWidth, const char* string, const char* end);
 
+// Flags for nvgTextOnPath, mirroring the SVG <textPath> attributes (see nvg::TextPathOptions).
+enum NVGtextPathFlags {
+    NVG_TEXTPATH_PERCENT = 1 << 0,  // startOffset is a percentage (0..100) of the path's length.
+    NVG_TEXTPATH_RIGHT = 1 << 1,    // side="right": follow the path in reverse, text on the other side.
+    NVG_TEXTPATH_STRETCH = 1 << 2,  // method="stretch": bend each glyph along the path instead of rotating it rigidly.
+};
+
+// Draws text along the current path, like SVG <textPath>: each glyph is placed at its advance midpoint's
+// distance along the path and rotated to follow the path there. startOffset is the distance (local
+// units, or a percentage with NVG_TEXTPATH_PERCENT) of the text anchor set by the horizontal text align;
+// baselineShift moves the glyphs along the path's normal (positive = down). The path is not drawn and
+// stays current. Returns the distance along the path just past the last glyph. See nvg::Context::textOnPath.
+float nvgTextOnPath(NVGcontext* ctx, const char* string, const char* end, float startOffset, float baselineShift, int flags);
+
 // Measures the specified text string. Parameter bounds should be a pointer to float[4],
 // if the bounding box of the text should be returned. The bounds value are [xmin,ymin, xmax,ymax]
 // Returns the horizontal advance of the measured text (i.e. where the next character should drawn).
