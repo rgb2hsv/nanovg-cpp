@@ -439,6 +439,7 @@ void Context::reset()
     state.fontDilate = 0.0f;
     state.textAlign = static_cast<int>(Align::Left | Align::Baseline);
     state.fontId = 0;
+    state.textFill = TextFill::Color;
 }
 
 // State setting
@@ -2355,6 +2356,11 @@ void Context::fontDilate(float dilate)
 {
     State& state = mImpl->topState();
     state.fontDilate = dilate;
+}
+
+void Context::textFill(TextFill mode)
+{
+    mImpl->topState().textFill = mode == TextFill::Paint ? TextFill::Paint : TextFill::Color;
 }
 
 void Context::textLetterSpacing(float spacing)

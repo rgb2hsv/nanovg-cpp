@@ -184,6 +184,10 @@ void main(void)
         if (f.texType == 2) color = vec4(color.x);
         color *= scissor;
         result = color * f.innerCol;
+    } else if (f.type == 4) {  // Gradient through an alpha mask (gradient-filled text)
+        vec2 pt = (f.paintMat * vec3(fpos, 1.0)).xy;
+        float d = clamp((sdroundrect(pt, f.extent, f.radius) + f.feather * 0.5) / f.feather, 0.0, 1.0);
+        result = mix(f.innerCol, f.outerCol, d) * (texture(tex, ftcoord).x * scissor);
     }
     if (f.shapeType != 0) {
         shapeType = f.shapeType;

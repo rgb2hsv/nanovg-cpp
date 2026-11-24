@@ -99,6 +99,7 @@ struct State {
     float fontDilate;
     int textAlign;
     int fontId;
+    TextFill textFill = TextFill::Color;
 };
 
 struct Point {

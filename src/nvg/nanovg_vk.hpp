@@ -140,7 +140,7 @@ struct Functions {
 #undef NVGVK_DECLARE
 };
 
-enum ShaderType { ShaderFillGrad, ShaderFillImg, ShaderSimple, ShaderImg };
+enum ShaderType { ShaderFillGrad, ShaderFillImg, ShaderSimple, ShaderImg, ShaderGradMask };
 
 enum CallType { CallNone = 0, CallFill, CallConvexFill, CallStroke, CallTriangles };
 
@@ -1569,6 +1569,26 @@ static void renderTriangles(void* uptr, Paint* paint, CompositeOperationState co
     pushCall(vk, call, 1);
 }
 
+static void renderMaskedPaint(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
+{
+    VkContext* vk = static_cast<VkContext*>(uptr);
+    Call call{};
+    call.type = CallTriangles;
+    call.image = mask;
+    call.blend = blendCompositeOperation(compositeOperation);
+    call.first = static_cast<int>(appendVerts(vk, verts, nverts));
+    call.count = nverts;
+
+    // The paint's gradient uniforms, sampled through the mask bound as the call's texture.
+    Paint gradient = *paint;
+    gradient.image = 0;
+    call.uniformOffset = allocUniforms(vk, 1);
+    FragUniforms* frag = &vk->uniforms[call.uniformOffset];
+    if (!convertPaint(vk, frag, &gradient, scissor, 1.0f, fringe, -1.0f, 0)) return;
+    frag->type = ShaderGradMask;
+    pushCall(vk, call, 1);
+}
+
 static void renderShape(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const Shape* shape, const Vertex* verts, int nverts)
 {
     VkContext* vk = static_cast<VkContext*>(uptr);
@@ -1664,6 +1684,7 @@ static VkContext* newContext(const VkCreateInfo& createInfo, int flags, Params* 
     params->renderStroke = renderStroke;
     params->renderTriangles = renderTriangles;
     params->renderShape = renderShape;
+    params->renderMaskedPaint = renderMaskedPaint;
     params->renderDelete = renderDelete;
     params->userPtr = vk;
     params->edgeAntiAlias = (flags & CreateFlags::Antialias) ? 1 : 0;

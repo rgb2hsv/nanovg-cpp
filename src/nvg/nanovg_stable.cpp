@@ -653,6 +653,12 @@ void nvgFontDilate(NVGcontext* ctx, float dilate)
     ctx->fontDilate(dilate);
 }
 
+void nvgTextFill(NVGcontext* ctx, int mode)
+{
+    static_assert(static_cast<int>(NVG_TEXT_FILL_PAINT) == static_cast<int>(nvg::TextFill::Paint));
+    ctx->textFill(mode == NVG_TEXT_FILL_PAINT ? nvg::TextFill::Paint : nvg::TextFill::Color);
+}
+
 void nvgTextLetterSpacing(NVGcontext* ctx, float spacing)
 {
     ctx->textLetterSpacing(spacing);

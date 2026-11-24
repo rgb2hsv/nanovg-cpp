@@ -1694,6 +1694,31 @@ static void demoTextOnPath(nvg::Context& vg, const nvg::Rect& c, float t)
     vg.restore();
 }
 
+static void demoTextFill(nvg::Context& vg, const nvg::Rect& c, float t)
+{
+    vg.save();
+    vg.fontFace("sans-bold");
+    vg.textFill(nvg::TextFill::Paint);
+    vg.textAlign(static_cast<int>(nvg::Align::Center | nvg::Align::Middle));
+    // A linear gradient across the word's bounds, sliding sideways: the glyphs show the gradient as a
+    // rect filled under them would.
+    vg.fontSize(46.0f);
+    float b[4];
+    vg.textBounds(c.x + c.w * 0.5f, c.y + 68, "Gradient", nullptr, b);
+    const float shift = (b[2] - b[0]) * 0.5f * sinf(t);
+    vg.fillPaint(vg.linearGradient(b[0] + shift, 0, b[2] + shift, 0, nvg::rgba(255, 60, 120, 255), nvg::rgba(80, 200, 255, 255)));
+    vg.text(c.x + c.w * 0.5f, c.y + 68, "Gradient", nullptr);
+    // A radial gradient pulsing out from the middle of the second line, and a vertical one below it.
+    vg.fontSize(30.0f);
+    const float r = 20.0f + 30.0f * (0.5f + 0.5f * sinf(t * 1.7f));
+    vg.fillPaint(vg.radialGradient(c.x + c.w * 0.5f, c.y + 115, 4, r, nvg::rgba(255, 240, 120, 255), nvg::rgba(255, 90, 0, 255)));
+    vg.text(c.x + c.w * 0.5f, c.y + 115, "radial fill", nullptr);
+    vg.fillPaint(vg.linearGradient(0, c.y + 145, 0, c.y + 165, nvg::rgba(255, 255, 255, 255), nvg::rgba(90, 220, 120, 255)));
+    vg.fontSize(22.0f);
+    vg.text(c.x + c.w * 0.5f, c.y + 155, "vertical fade", nullptr);
+    vg.restore();
+}
+
 static void demoPoints(nvg::Context& vg, const nvg::Rect& c, float t)
 {
     std::array<float, 2 * 16> wave{};
@@ -1884,6 +1909,7 @@ void renderDrawCallsDemo(nvg::Context& vg, float x, float y, float width, float 
         {"drawGrid", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoGrid(v, c, tt); }},
         {"textOuterShadow / Inner", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOuterShadow(v, c, tt); }},
         {"textOnPath", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextOnPath(v, c, tt); }},
+        {"textFill(Paint): gradient text", [](nvg::Context& v, const nvg::Rect& c, float tt, const DemoData&) { demoTextFill(v, c, tt); }},
     };
 
     static_assert(std::size(entries) <= cols * rows);

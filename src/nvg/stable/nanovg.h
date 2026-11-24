@@ -775,6 +775,16 @@ void nvgTextInnerShadow(NVGcontext* ctx, float offsetX, float offsetY, float blu
 // Sets the dilation of current text style.
 void nvgFontDilate(NVGcontext* ctx, float dilate);
 
+// How text is colored by the fill paint. Mirrors nvg::TextFill.
+enum NVGtextFill {
+    NVG_TEXT_FILL_COLOR = 0,  // The fill paint's inner color only (default, classic NanoVG).
+    NVG_TEXT_FILL_PAINT = 1,  // The whole fill paint: a gradient runs across the glyphs as across a rect filled under them.
+};
+
+// Selects how nvgText / nvgTextBox / nvgTextOnPath glyphs are colored by the fill paint (an NVGtextFill).
+// Build the gradient from nvgTextBounds to span the string. See nvg::Context::textFill.
+void nvgTextFill(NVGcontext* ctx, int mode);
+
 // Sets the letter spacing of current text style.
 void nvgTextLetterSpacing(NVGcontext* ctx, float spacing);
 
@@ -932,6 +942,10 @@ struct NVGparams {
     // Optional (may be NULL): draws verts (device-space triangles) with paint, scaled by the per-pixel
     // coverage of shape. nvgDrawGrid / nvgDrawArrow fall back to tessellated geometry without it.
     void (*renderShape)(void* uptr, NVGpaint* paint, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, float fringe, const NVGshape* shape, const NVGvertex* verts, int nverts);
+    // Optional (may be NULL): draws verts colored by paint's gradient (paint->image is 0), evaluated per
+    // pixel as in renderFill, scaled by the alpha texture mask sampled at the vertices' u, v. Used for
+    // gradient-filled text (NVG_TEXT_FILL_PAINT); without it such text uses the paint's inner color.
+    void (*renderMaskedPaint)(void* uptr, NVGpaint* paint, int mask, NVGcompositeOperationState compositeOperation, NVGscissor* scissor, const NVGvertex* verts, int nverts, float fringe);
 };
 typedef struct NVGparams NVGparams;
 

@@ -204,6 +204,13 @@ struct Marker {
     std::function<void(Context& ctx)> draw;
 };
 
+// How text is colored by the fill paint (Context::textFill).
+enum class TextFill : int {
+    Color = 0,  // Glyphs take the fill paint's inner color only, as in classic NanoVG (the default).
+    Paint = 1,  // Glyphs show the whole fill paint: a linear, radial or box gradient is evaluated across
+                // them as if a rect under the text were filled with it, in the same coordinates as shapes.
+};
+
 // Which side of the path text is drawn on by Context::textOnPath, like the SVG textPath side attribute.
 enum class TextPathSide : int {
     Left = 0,   // Along the path's direction, glyphs upright on its left (the default).
@@ -354,6 +361,11 @@ struct Params {
     // Optional (may be null): draws verts (device-space triangles) with paint, scaled by the coverage of
     // shape. Context falls back to tessellated geometry when it is not set.
     void (*renderShape)(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const Shape* shape, const Vertex* verts, int nverts);
+    // Optional (may be null): draws verts (device-space triangles) colored by paint's gradient (paint->image
+    // is 0), evaluated per pixel as in renderFill, and scaled by the coverage in the alpha texture mask
+    // sampled at the vertices' u, v. Used for gradient-filled text (TextFill::Paint); without it such text
+    // falls back to the paint's inner color.
+    void (*renderMaskedPaint)(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe);
 };
 
 #ifdef _MSC_VER
@@ -567,6 +579,12 @@ public:
     // the cost grows with the text's pixel area. Zero alpha turns it off (the default).
     void textInnerShadow(float offsetX, float offsetY, float blur, const Color& color);
     void fontDilate(float dilate);
+    // Selects how text() / textBox() / textOnPath() glyphs are colored by the fill paint. With
+    // TextFill::Paint a gradient fill (linearGradient, radialGradient, boxGradient) runs across the glyphs
+    // exactly as it would across a rect filled under them, so build it from the text's bounds (textBounds)
+    // to span the string. Image patterns keep the classic behaviour (their tint), as do backends without
+    // Params::renderMaskedPaint. Saved with the state; the default is TextFill::Color.
+    void textFill(TextFill mode);
     void textLetterSpacing(float spacing);
     void textLineHeight(float lineHeight);
     void textAlign(int align);

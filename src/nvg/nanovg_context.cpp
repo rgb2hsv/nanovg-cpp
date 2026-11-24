@@ -10,6 +10,7 @@
 #include "nanovg_detail.hpp"
 
 #include <array>
+#include <cstring>
 #include <cmath>
 #include <vector>
 
@@ -759,15 +760,21 @@ void ContextImpl::renderText(Vertex* verts, int nverts)
 {
     State& state = topState();
     Paint paint = state.fill;
-
-    // Render triangles.
-    paint.image = fontImages[fontImageIdx];
+    const int mask = fontImages[fontImageIdx];
 
     // Apply global alpha
     paint.innerColor.a *= state.alpha;
     paint.outerColor.a *= state.alpha;
 
-    params.renderTriangles(params.userPtr, &paint, state.compositeOperation, &state.scissor, verts, nverts, fringeWidth);
+    // A gradient (two colors, no image) needs the paint evaluated per pixel under the glyphs; a solid
+    // color keeps the plain textured path, which batches consecutive runs.
+    const bool gradient = paint.image == 0 && std::memcmp(&paint.innerColor, &paint.outerColor, sizeof(Color)) != 0;
+    if (state.textFill == TextFill::Paint && gradient && params.renderMaskedPaint) {
+        params.renderMaskedPaint(params.userPtr, &paint, mask, state.compositeOperation, &state.scissor, verts, nverts, fringeWidth);
+    } else {
+        paint.image = mask;
+        params.renderTriangles(params.userPtr, &paint, state.compositeOperation, &state.scissor, verts, nverts, fringeWidth);
+    }
 
     drawCallCount++;
     textTriCount += nverts / 3;

@@ -109,7 +109,7 @@ namespace nvg
 
 enum GlUniformLoc { GlUniformLocViewSize, GlUniformLocTex, GlUniformLocFrag, GlUniformLocCount };
 
-enum GlShaderType { NSVG_SHADER_FILLGRAD, NSVG_SHADER_FILLIMG, NSVG_SHADER_SIMPLE, NSVG_SHADER_IMG };
+enum GlShaderType { NSVG_SHADER_FILLGRAD, NSVG_SHADER_FILLIMG, NSVG_SHADER_SIMPLE, NSVG_SHADER_IMG, NSVG_SHADER_GRADMASK };
 
 #if NANOVG_GL_USE_UNIFORMBUFFER
 enum GlUniformBindings {
@@ -769,6 +769,15 @@ if (lineStyle > 1 && strokeAlpha < strokeThr) discard;
 		if (texType == 2) color = vec4(color.x);
 		color *= scissor;
 		result = color * innerCol;
+	} else if (type == 4) {		// Gradient through an alpha mask (gradient-filled text)
+		vec2 pt = (paintMat * vec3(fpos,1.0)).xy;
+		float d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);
+#ifdef NANOVG_GL3
+		float mask = texture(tex, ftcoord).x;
+#else
+		float mask = texture2D(tex, ftcoord).x;
+#endif
+		result = mix(innerCol,outerCol,d) * (mask * scissor);
 	}
 	if (shapeType != 0) result *= shapeCoverage((shapeMat * vec3(fpos, 1.0)).xy);
 #ifdef NANOVG_GL3
@@ -1635,6 +1644,49 @@ error:
     if (gl->ncalls > 0) gl->ncalls--;
 }
 
+static void glnvg__renderMaskedPaint(void* uptr, Paint* paint, int mask, CompositeOperationState compositeOperation, Scissor* scissor, const Vertex* verts, int nverts, float fringe)
+{
+    GLContext* gl = (GLContext*)uptr;
+    GlCall* call = glnvg__allocCall(gl);
+    GlFragUniforms* frag;
+    Paint gradient = *paint;
+
+    if (call == NULL) return;
+
+    call->type = Triangles;
+    call->image = mask;
+    call->blendFunc = glnvg__blendCompositeOperation(compositeOperation);
+
+    call->triangleOffset = glnvg__allocVerts(gl, nverts);
+    if (call->triangleOffset == -1) goto error;
+    call->triangleCount = nverts;
+    std::memcpy(&gl->verts[call->triangleOffset], verts, sizeof(Vertex) * nverts);
+
+    // The paint's gradient uniforms, sampled through the mask bound as the call's texture.
+    call->uniformOffset = glnvg__allocFragUniforms(gl, 1);
+    if (call->uniformOffset == -1) goto error;
+    frag = nvg::detail::fragUniformPtr(gl, call->uniformOffset);
+    gradient.image = 0;
+    glnvg__convertPaint(gl, frag, &gradient, scissor, 1.0f, fringe, -1.0f, 0);
+    frag->type = NSVG_SHADER_GRADMASK;
+
+    // Fold consecutive runs drawn the same way, as glnvg__renderTriangles does.
+    if (gl->ncalls >= 2) {
+        GlCall* prev = &gl->calls[gl->ncalls - 2];
+        if (prev->type == Triangles && prev->image == call->image && std::memcmp(&prev->blendFunc, &call->blendFunc, sizeof(GlBlend)) == 0 &&
+            prev->triangleOffset + prev->triangleCount == call->triangleOffset &&
+            std::memcmp(nvg::detail::fragUniformPtr(gl, prev->uniformOffset), frag, sizeof(GlFragUniforms)) == 0) {
+            prev->triangleCount += call->triangleCount;
+            gl->ncalls--;
+            gl->nuniforms--;
+        }
+    }
+    return;
+
+error:
+    if (gl->ncalls > 0) gl->ncalls--;
+}
+
 static void glnvg__renderShape(void* uptr, Paint* paint, CompositeOperationState compositeOperation, Scissor* scissor, float fringe, const Shape* shape, const Vertex* verts, int nverts)
 {
     GLContext* gl = (GLContext*)uptr;
@@ -1726,6 +1778,7 @@ std::unique_ptr<Context> createGL(int flags)
     params.renderStroke = glnvg__renderStroke;
     params.renderTriangles = glnvg__renderTriangles;
     params.renderShape = glnvg__renderShape;
+    params.renderMaskedPaint = glnvg__renderMaskedPaint;
     params.renderDelete = glnvg__renderDelete;
     params.userPtr = gl;
     params.edgeAntiAlias = flags & CreateFlags::Antialias ? 1 : 0;

@@ -1713,6 +1713,32 @@ static void demoTextOnPath(NVGcontext* vg, NVGrect c, float t, const DemoData* d
     nvgRestore(vg);
 }
 
+static void demoTextFill(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
+{
+    float b[4], shift, r;
+    NVG_NOTUSED(data);
+    nvgSave(vg);
+    nvgFontFace(vg, "sans-bold");
+    nvgTextFill(vg, NVG_TEXT_FILL_PAINT);
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    // A linear gradient across the word's bounds, sliding sideways: the glyphs show the gradient as a
+    // rect filled under them would.
+    nvgFontSize(vg, 46.0f);
+    nvgTextBounds(vg, c.x + c.w * 0.5f, c.y + 68, "Gradient", NULL, b);
+    shift = (b[2] - b[0]) * 0.5f * sinf(t);
+    nvgFillPaint(vg, nvgLinearGradient(vg, b[0] + shift, 0, b[2] + shift, 0, nvgRGBA(255, 60, 120, 255), nvgRGBA(80, 200, 255, 255)));
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 68, "Gradient", NULL);
+    // A radial gradient pulsing out from the middle of the second line, and a vertical one below it.
+    nvgFontSize(vg, 30.0f);
+    r = 20.0f + 30.0f * (0.5f + 0.5f * sinf(t * 1.7f));
+    nvgFillPaint(vg, nvgRadialGradient(vg, c.x + c.w * 0.5f, c.y + 115, 4, r, nvgRGBA(255, 240, 120, 255), nvgRGBA(255, 90, 0, 255)));
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 115, "radial fill", NULL);
+    nvgFillPaint(vg, nvgLinearGradient(vg, 0, c.y + 145, 0, c.y + 165, nvgRGBA(255, 255, 255, 255), nvgRGBA(90, 220, 120, 255)));
+    nvgFontSize(vg, 22.0f);
+    nvgText(vg, c.x + c.w * 0.5f, c.y + 155, "vertical fade", NULL);
+    nvgRestore(vg);
+}
+
 static void demoPoints(NVGcontext* vg, NVGrect c, float t, const DemoData* data)
 {
     float wave[2 * 16];
@@ -1873,7 +1899,7 @@ typedef void (*DrawCallsDemoFn)(NVGcontext* vg, NVGrect c, float t, const DemoDa
 
 void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float height, float t, DemoData* data)
 {
-    enum { cols = 7, rows = 3, count = 20 };
+    enum { cols = 7, rows = 3, count = 21 };
     // Each cell's content is authored in a fixed design space and scaled to fit the cell.
     const float designW = 240.0f, designH = 175.0f;
     const float pad = 10.0f, top = 34.0f;
@@ -1882,11 +1908,11 @@ void renderDrawCallsDemo(NVGcontext* vg, float x, float y, float width, float he
     static const char* titles[count] = {
         "drawRect / drawRoundRect", "drawDRRect", "drawCircle / drawOval", "drawArc", "drawLine", "drawArrow", "strokeDashArray", "markerStart / Mid / End",
         "ellipticalArcTo / Arc", "drawRoundRect(rx, ry)", "drawPoints / drawPoint", "drawPolygon", "drawPaint / drawColor", "drawImage / drawImageRect", "drawImageNine",
-        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner", "textOnPath",
+        "drawVertices", "clear", "drawGrid", "textOuterShadow / Inner", "textOnPath", "textFill(Paint): gradient text",
     };
     static const DrawCallsDemoFn draws[count] = {
         demoRects, demoDRRect, demoCircles, demoArcs, demoLines, demoArrows, demoDashes, demoMarkers, demoEllipticalArcs, demoEllipticalCorners, demoPoints, demoPolygon,
-        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow, demoTextOnPath,
+        demoPaintAndColor, demoImages, demoNinePatch, demoVertices, demoClear, demoGrid, demoTextOuterShadow, demoTextOnPath, demoTextFill,
     };
     float s;
     int i;

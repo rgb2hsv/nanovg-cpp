@@ -195,6 +195,18 @@ vg.textOnPath("round and round ", nullptr, opts);
 
 The attributes mirror SVG: the horizontal part of `textAlign` is `text-anchor` around `startOffset` (left = start, center = middle, right = end) and the vertical part places the glyphs on the path (`Baseline` sits them on it, `Middle` centers them). `startOffset` is in local units, or a percentage with `startOffsetPercent`; `baselineShift` moves the glyphs off the path along its normal. `TextPathMethod::Align` (the default) keeps glyphs rigid, while `Stretch` cuts each glyph into slices that bend with the path. `TextPathSide::Right` follows the path in reverse. Glyphs whose midpoint falls off either end of the path are dropped, as in SVG, except on a path made of a single closed subpath (a circle, a rounded rect), where positions wrap around so the start offset can be animated freely. Subpaths are followed one after the other. Font, size, letter spacing, blur, the fill paint and `textOuterShadow` apply as for `text()`; `textInnerShadow` does not. It returns the distance along the path just past the last glyph. C: `nvgTextOnPath(vg, string, end, startOffset, baselineShift, flags)` with `NVG_TEXTPATH_PERCENT`, `NVG_TEXTPATH_RIGHT` and `NVG_TEXTPATH_STRETCH`.
 
+Text can be filled with gradients. By default glyphs take only the fill paint's inner color, as in classic NanoVG; `textFill(nvg::TextFill::Paint)` makes `text()`, `textBox()` and `textOnPath()` show the whole fill paint instead, so a linear, radial or box gradient runs across the glyphs exactly as it would across a rect filled under them. Build the gradient from the text's bounds to span the string:
+
+```cpp
+float b[4];
+vg.textBounds(x, y, "Gradient", nullptr, b);
+vg.fillPaint(vg.linearGradient(b[0], 0, b[2], 0, nvg::rgba(255, 60, 120, 255), nvg::rgba(80, 200, 255, 255)));
+vg.textFill(nvg::TextFill::Paint);
+vg.text(x, y, "Gradient", nullptr);
+```
+
+The option is saved with the state. Backends draw it through the optional `Params::renderMaskedPaint` hook (the GL, stable GL and Vulkan backends implement it), which evaluates the gradient per pixel and multiplies it by the glyph coverage from the font atlas; without the hook, or with an image-pattern paint, text keeps its inner color. C: `nvgTextFill(vg, NVG_TEXT_FILL_PAINT)`.
+
 ### Skia-style draw calls (C++ only)
 
 `nvg::Context` also offers one-call draw methods modeled after `SkCanvas`. Each builds its own path and renders it with the current state, using an optional `nvg::PaintStyle` (`Fill`, `Stroke`, `FillAndStroke`). Because they replace the current path, don't call them in the middle of a `beginPath()` … `fill()` sequence.
