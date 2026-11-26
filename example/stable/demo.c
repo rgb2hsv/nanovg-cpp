@@ -11,9 +11,9 @@
 #endif
 #include "nanovg.h"
 // stb_image's implementation lives in the nanovg library.
-#include "thirdParty/stb_image.h"
+#include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "thirdParty/stb_image_write.h"
+#include "stb_image_write.h"
 
 #ifdef _MSC_VER
 #pragma warning(push)

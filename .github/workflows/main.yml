@@ -7,10 +7,23 @@ on:
 
 jobs:
   build:
+    name: ${{ matrix.name }} (Vulkan ${{ matrix.vulkan }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        vulkan: [ON, OFF]
+        name: [windows-msvc, linux-gcc, linux-clang]
+        include:
+          - name: windows-msvc
+            os: windows-latest
+          - name: linux-gcc
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - name: linux-clang
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
 
     runs-on: ${{ matrix.os }}
 
@@ -28,19 +41,24 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build \
+          sudo apt-get install -y cmake ninja-build clang \
             libglfw3-dev libglew-dev libgl1-mesa-dev \
             libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libxxf86vm-dev
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNANOVG_USE_SDL3=OFF
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNANOVG_USE_SDL3=OFF
+          -DNANOVG_BUILD_VULKAN=${{ matrix.vulkan }}
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         # No -G: CMake picks the newest Visual Studio on the runner, so image upgrades
         # (e.g. windows-latest moving from VS 2022 to VS 2026) don't break configure.
-        run: cmake -S . -B build -A x64 -DNANOVG_USE_SDL3=OFF
+        run: cmake -S . -B build -A x64 -DNANOVG_USE_SDL3=OFF -DNANOVG_BUILD_VULKAN=${{ matrix.vulkan }}
 
       - name: Build (Linux)
         if: runner.os == 'Linux'

@@ -28,9 +28,9 @@
 #endif
 
 // Do not define the STB_IMAGE_IMPLEMENTATION twice
-#include "thirdParty/stb_image.h"
+#include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "thirdParty/stb_image_write.h"
+#include "stb_image_write.h"
 
 #include "nanovg.hpp"
 #ifdef _MSC_VER
